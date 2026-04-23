@@ -229,7 +229,12 @@ impl App {
     }
 }
 
-fn render_list<W: Write>(w: &mut W, app: &App, term_width: u16, term_height: u16) -> io::Result<()> {
+fn render_list<W: Write>(
+    w: &mut W,
+    app: &App,
+    term_width: u16,
+    term_height: u16,
+) -> io::Result<()> {
     // Layout:
     //  row 0: search input
     //  row 1: separator
@@ -258,7 +263,11 @@ fn render_list<W: Write>(w: &mut W, app: &App, term_width: u16, term_height: u16
     )?;
 
     // --- Separator ---
-    let sep_width = if term_width > 4 { (term_width - 4) as usize } else { 0 };
+    let sep_width = if term_width > 4 {
+        (term_width - 4) as usize
+    } else {
+        0
+    };
     let sep: String = "─".repeat(sep_width);
     queue!(
         w,
@@ -336,7 +345,11 @@ fn render_report<W: Write>(
     )?;
 
     // --- Separator ---
-    let sep_width = if term_width > 4 { (term_width - 4) as usize } else { 0 };
+    let sep_width = if term_width > 4 {
+        (term_width - 4) as usize
+    } else {
+        0
+    };
     let sep: String = "─".repeat(sep_width);
     queue!(
         w,
@@ -364,8 +377,7 @@ fn render_report<W: Write>(
         1
     };
     // Layout: "  name  count  ████"
-    let bar_budget = (term_width as usize)
-        .saturating_sub(2 + max_name_len + 2 + count_width + 2);
+    let bar_budget = (term_width as usize).saturating_sub(2 + max_name_len + 2 + count_width + 2);
 
     let visible = entries.iter().skip(scroll).take(content_height);
     for (i, (name, count)) in visible.enumerate() {
@@ -436,7 +448,11 @@ fn render_preview<W: Write>(
     )?;
 
     // --- Separator ---
-    let sep_width = if term_width > 4 { (term_width - 4) as usize } else { 0 };
+    let sep_width = if term_width > 4 {
+        (term_width - 4) as usize
+    } else {
+        0
+    };
     let sep: String = "─".repeat(sep_width);
     queue!(
         w,
@@ -515,120 +531,149 @@ fn run() -> io::Result<Option<String>> {
             };
 
             if let Some((is_preview, lines)) = current_mode {
-            if !is_preview {
-                // --- Report mode ---
-                let counts = load_counts(&cnt_path);
-                render_report(
-                    &mut tty_write,
-                    &app.files,
-                    &counts,
-                    app.report_scroll,
-                    term_width,
-                    term_height,
-                )?;
+                if !is_preview {
+                    // --- Report mode ---
+                    let counts = load_counts(&cnt_path);
+                    render_report(
+                        &mut tty_write,
+                        &app.files,
+                        &counts,
+                        app.report_scroll,
+                        term_width,
+                        term_height,
+                    )?;
 
-                let content_height = if term_height > 3 {
-                    (term_height - 3) as usize
+                    let content_height = if term_height > 3 {
+                        (term_height - 3) as usize
+                    } else {
+                        0
+                    };
+
+                    match event::read()? {
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Esc, ..
+                        })
+                        | Event::Key(KeyEvent {
+                            code: KeyCode::Left,
+                            ..
+                        }) => {
+                            app.mode = Mode::List;
+                        }
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('c'),
+                            modifiers: KeyModifiers::CONTROL,
+                            ..
+                        }) => {
+                            return Ok(None);
+                        }
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Up, ..
+                        }) => {
+                            if app.report_scroll > 0 {
+                                app.report_scroll -= 1;
+                            }
+                        }
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Down,
+                            ..
+                        }) => {
+                            let total = app.files.len();
+                            if app.report_scroll + content_height < total {
+                                app.report_scroll += 1;
+                            }
+                        }
+                        Event::Resize(_, _) => {}
+                        _ => {}
+                    }
                 } else {
-                    0
-                };
+                    // --- Preview mode ---
+                    let filename = filter_files(&app.files, &app.query)
+                        .get(app.selection)
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
 
-                match event::read()? {
-                    Event::Key(KeyEvent { code: KeyCode::Esc, .. })
-                    | Event::Key(KeyEvent { code: KeyCode::Left, .. }) => {
-                        app.mode = Mode::List;
-                    }
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('c'),
-                        modifiers: KeyModifiers::CONTROL,
-                        ..
-                    }) => {
-                        return Ok(None);
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Up, .. }) => {
-                        if app.report_scroll > 0 {
-                            app.report_scroll -= 1;
+                    render_preview(
+                        &mut tty_write,
+                        &filename,
+                        &lines,
+                        app.preview_scroll,
+                        term_width,
+                        term_height,
+                    )?;
+
+                    let content_height = if term_height > 3 {
+                        (term_height - 3) as usize
+                    } else {
+                        0
+                    };
+
+                    match event::read()? {
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Esc, ..
+                        })
+                        | Event::Key(KeyEvent {
+                            code: KeyCode::Left,
+                            ..
+                        }) => {
+                            app.mode = Mode::List;
                         }
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Down, .. }) => {
-                        let total = app.files.len();
-                        if app.report_scroll + content_height < total {
-                            app.report_scroll += 1;
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('c'),
+                            modifiers: KeyModifiers::CONTROL,
+                            ..
+                        }) => {
+                            return Ok(None);
                         }
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Enter,
+                            ..
+                        }) => {
+                            let filtered = filter_files(&app.files, &app.query);
+                            if let Some(name) = filtered.get(app.selection) {
+                                let name = name.to_string();
+                                record_usage(&hist_path, &name);
+                                increment_count(&cnt_path, &name);
+                                return Ok(Some(name));
+                            }
+                        }
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Up, ..
+                        }) => {
+                            if app.preview_scroll > 0 {
+                                app.preview_scroll -= 1;
+                            }
+                        }
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Down,
+                            ..
+                        }) => {
+                            if app.preview_scroll + content_height < lines.len() {
+                                app.preview_scroll += 1;
+                            }
+                        }
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('e'),
+                            ..
+                        }) => {
+                            let filtered = filter_files(&app.files, &app.query);
+                            if let Some(name) = filtered.get(app.selection) {
+                                let file_path = dir.join(name.as_str());
+                                open_in_editor(&mut tty_write, &file_path)?;
+                                let new_lines = Rc::new(load_file_lines(&file_path));
+                                app.mode = Mode::Preview(new_lines);
+                            }
+                        }
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('r'),
+                            ..
+                        }) => {
+                            app.mode = Mode::Report;
+                            app.report_scroll = 0;
+                        }
+                        Event::Resize(_, _) => {}
+                        _ => {}
                     }
-                    Event::Resize(_, _) => {}
-                    _ => {}
                 }
-            } else {
-                // --- Preview mode ---
-                let filename = filter_files(&app.files, &app.query)
-                    .get(app.selection)
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
-
-                render_preview(
-                    &mut tty_write,
-                    &filename,
-                    &lines,
-                    app.preview_scroll,
-                    term_width,
-                    term_height,
-                )?;
-
-                let content_height = if term_height > 3 {
-                    (term_height - 3) as usize
-                } else {
-                    0
-                };
-
-                match event::read()? {
-                    Event::Key(KeyEvent { code: KeyCode::Esc, .. })
-                    | Event::Key(KeyEvent { code: KeyCode::Left, .. }) => {
-                        app.mode = Mode::List;
-                    }
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('c'),
-                        modifiers: KeyModifiers::CONTROL,
-                        ..
-                    }) => {
-                        return Ok(None);
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
-                        let filtered = filter_files(&app.files, &app.query);
-                        if let Some(name) = filtered.get(app.selection) {
-                            let name = name.to_string();
-                            record_usage(&hist_path, &name);
-                            increment_count(&cnt_path, &name);
-                            return Ok(Some(name));
-                        }
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Up, .. }) => {
-                        if app.preview_scroll > 0 {
-                            app.preview_scroll -= 1;
-                        }
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Down, .. }) => {
-                        if app.preview_scroll + content_height < lines.len() {
-                            app.preview_scroll += 1;
-                        }
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Char('e'), .. }) => {
-                        let filtered = filter_files(&app.files, &app.query);
-                        if let Some(name) = filtered.get(app.selection) {
-                            let file_path = dir.join(name.as_str());
-                            open_in_editor(&mut tty_write, &file_path)?;
-                            let new_lines = Rc::new(load_file_lines(&file_path));
-                            app.mode = Mode::Preview(new_lines);
-                        }
-                    }
-                    Event::Key(KeyEvent { code: KeyCode::Char('r'), .. }) => {
-                        app.mode = Mode::Report;
-                        app.report_scroll = 0;
-                    }
-                    Event::Resize(_, _) => {}
-                    _ => {}
-                }
-            }
             } else {
                 // --- List mode ---
                 let list_height = if term_height > 3 {
@@ -640,7 +685,9 @@ fn run() -> io::Result<Option<String>> {
                 render_list(&mut tty_write, &app, term_width, term_height)?;
 
                 match event::read()? {
-                    Event::Key(KeyEvent { code: KeyCode::Esc, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Esc, ..
+                    }) => {
                         return Ok(None);
                     }
                     Event::Key(KeyEvent {
@@ -650,7 +697,10 @@ fn run() -> io::Result<Option<String>> {
                     }) => {
                         return Ok(None);
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Enter,
+                        ..
+                    }) => {
                         let filtered = app.filtered();
                         if let Some(name) = filtered.get(app.selection) {
                             let name = name.to_string();
@@ -659,18 +709,26 @@ fn run() -> io::Result<Option<String>> {
                             return Ok(Some(name));
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Up, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Up, ..
+                    }) => {
                         if app.selection > 0 {
                             app.selection -= 1;
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Down, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Down,
+                        ..
+                    }) => {
                         let len = app.filtered().len();
                         if len > 0 && app.selection < len - 1 {
                             app.selection += 1;
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Right, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Right,
+                        ..
+                    }) => {
                         let filtered = app.filtered();
                         if let Some(name) = filtered.get(app.selection) {
                             let file_path = dir.join(name.as_str());
@@ -679,7 +737,10 @@ fn run() -> io::Result<Option<String>> {
                             app.preview_scroll = 0;
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Backspace, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Backspace,
+                        ..
+                    }) => {
                         app.query.pop();
                         app.selection = 0;
                         app.scroll_offset = 0;
