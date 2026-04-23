@@ -1,0 +1,17 @@
+[package]
+name = "ee"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ee"
+path = "src/main.rs"
+
+[dependencies]
+crossterm = "0.28"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
