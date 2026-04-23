@@ -348,6 +348,11 @@ fn main() {
         Ok(Some(filename)) => {
             let dir = envvars_dir();
             let path = dir.join(&filename);
+            // Print confirmation to the terminal (not stdout, which is reserved for eval)
+            if let Ok(mut tty) = fs::OpenOptions::new().write(true).open("/dev/tty") {
+                let msg = format!("\r\n  \u{2713} sourced {}\r\n", filename);
+                let _ = tty.write_all(msg.as_bytes());
+            }
             println!("source {}", path.display());
         }
         Ok(None) => {
