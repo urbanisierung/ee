@@ -9,6 +9,7 @@ use crossterm::{
     },
 };
 use std::{
+    collections::HashMap,
     fs,
     io::{self, BufRead, BufReader, Write},
     path::PathBuf,
@@ -17,6 +18,7 @@ use std::{
 };
 
 const HISTORY_FILE: &str = ".ee_history";
+const COUNTS_FILE: &str = ".ee_counts";
 const ENVVARS_DIR: &str = ".config/envvars";
 
 fn envvars_dir() -> PathBuf {
@@ -26,6 +28,42 @@ fn envvars_dir() -> PathBuf {
 
 fn history_path() -> PathBuf {
     envvars_dir().join(HISTORY_FILE)
+}
+
+fn counts_path() -> PathBuf {
+    envvars_dir().join(COUNTS_FILE)
+}
+
+fn load_counts(path: &PathBuf) -> HashMap<String, u64> {
+    match fs::File::open(path) {
+        Ok(f) => BufReader::new(f)
+            .lines()
+            .map_while(Result::ok)
+            .filter_map(|l| {
+                let mut parts = l.splitn(2, '\t');
+                let name = parts.next()?.to_string();
+                let count = parts.next()?.parse::<u64>().ok()?;
+                Some((name, count))
+            })
+            .collect(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save_counts(path: &PathBuf, counts: &HashMap<String, u64>) -> io::Result<()> {
+    let content: String = counts
+        .iter()
+        .map(|(name, count)| format!("{}\t{}", name, count))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(path, content)
+}
+
+fn increment_count(path: &PathBuf, filename: &str) {
+    let mut counts = load_counts(path);
+    *counts.entry(filename.to_string()).or_insert(0) += 1;
+    let _ = save_counts(path, &counts);
 }
 
 /// Load the MRU history list (filenames only, not paths).
@@ -63,6 +101,7 @@ fn discover_files(dir: &PathBuf, history: &[String]) -> Vec<String> {
                 .filter(|e| {
                     e.file_type().map(|ft| ft.is_file()).unwrap_or(false)
                         && e.file_name() != HISTORY_FILE
+                        && e.file_name() != COUNTS_FILE
                 })
                 .map(|e| e.file_name().to_string_lossy().into_owned())
                 .collect();
@@ -111,11 +150,34 @@ fn load_file_lines(path: &PathBuf) -> Vec<String> {
     }
 }
 
+fn open_in_editor<W: Write>(tty_write: &mut W, file_path: &PathBuf) -> io::Result<()> {
+    execute!(tty_write, LeaveAlternateScreen, cursor::Show)?;
+    disable_raw_mode()?;
+
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| "vi".to_string());
+    let tty_in = fs::File::open("/dev/tty")?;
+    let tty_out = fs::OpenOptions::new().write(true).open("/dev/tty")?;
+    let tty_err = fs::OpenOptions::new().write(true).open("/dev/tty")?;
+    let _ = process::Command::new(&editor)
+        .arg(file_path)
+        .stdin(tty_in)
+        .stdout(tty_out)
+        .stderr(tty_err)
+        .status();
+
+    enable_raw_mode()?;
+    execute!(tty_write, EnterAlternateScreen, cursor::Hide)?;
+    Ok(())
+}
+
 enum Mode {
     List,
     /// Preview mode carries the lines of the currently-previewed file via a
     /// reference-counted pointer so that the per-frame clone is O(1).
     Preview(Rc<Vec<String>>),
+    Report,
 }
 
 struct App {
@@ -125,6 +187,7 @@ struct App {
     scroll_offset: usize,
     mode: Mode,
     preview_scroll: usize,
+    report_scroll: usize,
 }
 
 impl App {
@@ -136,6 +199,7 @@ impl App {
             scroll_offset: 0,
             mode: Mode::List,
             preview_scroll: 0,
+            report_scroll: 0,
         }
     }
 
@@ -230,7 +294,7 @@ fn render_list<W: Write>(w: &mut W, app: &App, term_width: u16, term_height: u16
     }
 
     // --- Footer ---
-    let footer = "  ↑↓ navigate  → preview  enter source  esc quit";
+    let footer = "  ↑↓ navigate  → preview  enter source  e edit  r report  esc quit";
     queue!(
         w,
         cursor::MoveTo(0, term_height - 1),
@@ -242,6 +306,100 @@ fn render_list<W: Write>(w: &mut W, app: &App, term_width: u16, term_height: u16
     // Park cursor after query text on input row
     let cursor_col = 4 + app.query.len() as u16;
     queue!(w, cursor::MoveTo(cursor_col, 0))?;
+
+    w.flush()
+}
+
+fn render_report<W: Write>(
+    w: &mut W,
+    files: &[String],
+    counts: &HashMap<String, u64>,
+    scroll: usize,
+    term_width: u16,
+    term_height: u16,
+) -> io::Result<()> {
+    let content_height = if term_height > 3 {
+        (term_height - 3) as usize
+    } else {
+        0
+    };
+
+    queue!(w, cursor::MoveTo(0, 0), Clear(ClearType::All))?;
+
+    // --- Header ---
+    queue!(
+        w,
+        cursor::MoveTo(0, 0),
+        SetAttribute(Attribute::Bold),
+        Print("  Source report"),
+        SetAttribute(Attribute::Reset),
+    )?;
+
+    // --- Separator ---
+    let sep_width = if term_width > 4 { (term_width - 4) as usize } else { 0 };
+    let sep: String = "─".repeat(sep_width);
+    queue!(
+        w,
+        cursor::MoveTo(0, 1),
+        SetForegroundColor(Color::DarkGrey),
+        Print("  "),
+        Print(&sep),
+        ResetColor,
+    )?;
+
+    // Build sorted entries: descending by count, then alphabetical
+    let mut entries: Vec<(&String, u64)> = files
+        .iter()
+        .map(|f| (f, *counts.get(f).unwrap_or(&0)))
+        .collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+
+    let max_count = entries.iter().map(|(_, c)| *c).max().unwrap_or(0);
+    let max_name_len = entries.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+
+    // Available width for the bar (after name + count + padding)
+    let count_width = if max_count > 0 {
+        (max_count as f64).log10().floor() as usize + 1
+    } else {
+        1
+    };
+    // Layout: "  name  count  ████"
+    let bar_budget = (term_width as usize)
+        .saturating_sub(2 + max_name_len + 2 + count_width + 2);
+
+    let visible = entries.iter().skip(scroll).take(content_height);
+    for (i, (name, count)) in visible.enumerate() {
+        let row = (2 + i) as u16;
+        queue!(w, cursor::MoveTo(0, row))?;
+
+        let bar_len = if max_count > 0 {
+            (*count as f64 / max_count as f64 * bar_budget as f64).round() as usize
+        } else {
+            0
+        };
+        let bar: String = "█".repeat(bar_len);
+
+        queue!(
+            w,
+            Print(format!("  {:width$}  ", name, width = max_name_len)),
+            SetForegroundColor(Color::DarkGrey),
+            Print(format!("{:>cw$}  ", count, cw = count_width)),
+            ResetColor,
+            SetForegroundColor(Color::Green),
+            Print(&bar),
+            ResetColor,
+        )?;
+    }
+
+    // --- Footer ---
+    let footer = "  ← esc back  ↑↓ scroll";
+    queue!(
+        w,
+        cursor::MoveTo(0, term_height - 1),
+        SetForegroundColor(Color::DarkGrey),
+        Print(footer),
+        ResetColor,
+    )?;
 
     w.flush()
 }
@@ -302,7 +460,7 @@ fn render_preview<W: Write>(
     }
 
     // --- Footer ---
-    let footer = "  ← esc back  ↑↓ scroll  enter source";
+    let footer = "  ← esc back  ↑↓ scroll  enter source  e edit  r report";
     queue!(
         w,
         cursor::MoveTo(0, term_height - 1),
@@ -323,6 +481,7 @@ fn run() -> io::Result<Option<String>> {
     }
 
     let hist_path = history_path();
+    let cnt_path = counts_path();
     let history = load_history(&hist_path);
     let files = discover_files(&dir, &history);
 
@@ -349,12 +508,58 @@ fn run() -> io::Result<Option<String>> {
             // Clone preview lines (if in preview mode) before any rendering so that we
             // hold no borrow on `app.mode` when we later mutate it in the event handler.
             // `Rc::clone` is O(1) — just a reference-count increment.
-            let preview_lines: Option<Rc<Vec<String>>> = match &app.mode {
-                Mode::Preview(lines) => Some(Rc::clone(lines)),
+            let current_mode = match &app.mode {
+                Mode::Preview(lines) => Some((true, Rc::clone(lines))),
+                Mode::Report => Some((false, Rc::new(vec![]))),
                 Mode::List => None,
             };
 
-            if let Some(lines) = preview_lines {
+            if let Some((is_preview, lines)) = current_mode {
+            if !is_preview {
+                // --- Report mode ---
+                let counts = load_counts(&cnt_path);
+                render_report(
+                    &mut tty_write,
+                    &app.files,
+                    &counts,
+                    app.report_scroll,
+                    term_width,
+                    term_height,
+                )?;
+
+                let content_height = if term_height > 3 {
+                    (term_height - 3) as usize
+                } else {
+                    0
+                };
+
+                match event::read()? {
+                    Event::Key(KeyEvent { code: KeyCode::Esc, .. })
+                    | Event::Key(KeyEvent { code: KeyCode::Left, .. }) => {
+                        app.mode = Mode::List;
+                    }
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('c'),
+                        modifiers: KeyModifiers::CONTROL,
+                        ..
+                    }) => {
+                        return Ok(None);
+                    }
+                    Event::Key(KeyEvent { code: KeyCode::Up, .. }) => {
+                        if app.report_scroll > 0 {
+                            app.report_scroll -= 1;
+                        }
+                    }
+                    Event::Key(KeyEvent { code: KeyCode::Down, .. }) => {
+                        let total = app.files.len();
+                        if app.report_scroll + content_height < total {
+                            app.report_scroll += 1;
+                        }
+                    }
+                    Event::Resize(_, _) => {}
+                    _ => {}
+                }
+            } else {
                 // --- Preview mode ---
                 let filename = filter_files(&app.files, &app.query)
                     .get(app.selection)
@@ -393,6 +598,7 @@ fn run() -> io::Result<Option<String>> {
                         if let Some(name) = filtered.get(app.selection) {
                             let name = name.to_string();
                             record_usage(&hist_path, &name);
+                            increment_count(&cnt_path, &name);
                             return Ok(Some(name));
                         }
                     }
@@ -406,9 +612,23 @@ fn run() -> io::Result<Option<String>> {
                             app.preview_scroll += 1;
                         }
                     }
+                    Event::Key(KeyEvent { code: KeyCode::Char('e'), .. }) => {
+                        let filtered = filter_files(&app.files, &app.query);
+                        if let Some(name) = filtered.get(app.selection) {
+                            let file_path = dir.join(name.as_str());
+                            open_in_editor(&mut tty_write, &file_path)?;
+                            let new_lines = Rc::new(load_file_lines(&file_path));
+                            app.mode = Mode::Preview(new_lines);
+                        }
+                    }
+                    Event::Key(KeyEvent { code: KeyCode::Char('r'), .. }) => {
+                        app.mode = Mode::Report;
+                        app.report_scroll = 0;
+                    }
                     Event::Resize(_, _) => {}
                     _ => {}
                 }
+            }
             } else {
                 // --- List mode ---
                 let list_height = if term_height > 3 {
@@ -435,6 +655,7 @@ fn run() -> io::Result<Option<String>> {
                         if let Some(name) = filtered.get(app.selection) {
                             let name = name.to_string();
                             record_usage(&hist_path, &name);
+                            increment_count(&cnt_path, &name);
                             return Ok(Some(name));
                         }
                     }
@@ -462,6 +683,25 @@ fn run() -> io::Result<Option<String>> {
                         app.query.pop();
                         app.selection = 0;
                         app.scroll_offset = 0;
+                    }
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('e'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) if app.query.is_empty() => {
+                        let filtered = app.filtered();
+                        if let Some(name) = filtered.get(app.selection) {
+                            let file_path = dir.join(name.as_str());
+                            open_in_editor(&mut tty_write, &file_path)?;
+                        }
+                    }
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('r'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) if app.query.is_empty() => {
+                        app.mode = Mode::Report;
+                        app.report_scroll = 0;
                     }
                     Event::Key(KeyEvent {
                         code: KeyCode::Char(c),
