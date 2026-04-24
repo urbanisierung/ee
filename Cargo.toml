@@ -7,6 +7,10 @@ edition = "2021"
 name = "ee"
 path = "src/main.rs"
 
+[[bin]]
+name = "eee"
+path = "src/eee.rs"
+
 [dependencies]
 crossterm = "0.28"
 
