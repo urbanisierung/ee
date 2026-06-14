@@ -303,7 +303,7 @@ fn render_list<W: Write>(
     }
 
     // --- Footer ---
-    let footer = "  ↑↓ navigate  → preview  enter source  e edit  r report  esc quit";
+    let footer = "  ↑↓ navigate  → preview  enter source  ^e edit  ^r report  esc quit";
     queue!(
         w,
         cursor::MoveTo(0, term_height - 1),
@@ -476,7 +476,7 @@ fn render_preview<W: Write>(
     }
 
     // --- Footer ---
-    let footer = "  ← esc back  ↑↓ scroll  enter source  e edit  r report";
+    let footer = "  ← esc back  ↑↓ scroll  enter source  ^e edit  ^r report";
     queue!(
         w,
         cursor::MoveTo(0, term_height - 1),
@@ -653,6 +653,7 @@ fn run() -> io::Result<Option<String>> {
                         }
                         Event::Key(KeyEvent {
                             code: KeyCode::Char('e'),
+                            modifiers: KeyModifiers::CONTROL,
                             ..
                         }) => {
                             let filtered = filter_files(&app.files, &app.query);
@@ -665,6 +666,7 @@ fn run() -> io::Result<Option<String>> {
                         }
                         Event::Key(KeyEvent {
                             code: KeyCode::Char('r'),
+                            modifiers: KeyModifiers::CONTROL,
                             ..
                         }) => {
                             app.mode = Mode::Report;
@@ -747,9 +749,9 @@ fn run() -> io::Result<Option<String>> {
                     }
                     Event::Key(KeyEvent {
                         code: KeyCode::Char('e'),
-                        modifiers: KeyModifiers::NONE,
+                        modifiers: KeyModifiers::CONTROL,
                         ..
-                    }) if app.query.is_empty() => {
+                    }) => {
                         let filtered = app.filtered();
                         if let Some(name) = filtered.get(app.selection) {
                             let file_path = dir.join(name.as_str());
@@ -758,9 +760,9 @@ fn run() -> io::Result<Option<String>> {
                     }
                     Event::Key(KeyEvent {
                         code: KeyCode::Char('r'),
-                        modifiers: KeyModifiers::NONE,
+                        modifiers: KeyModifiers::CONTROL,
                         ..
-                    }) if app.query.is_empty() => {
+                    }) => {
                         app.mode = Mode::Report;
                         app.report_scroll = 0;
                     }
