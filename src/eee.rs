@@ -14,11 +14,14 @@ use std::{
     io::{self, BufRead, BufReader, Write},
     path::PathBuf,
     process,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const HISTORY_FILE: &str = "history";
 const COUNTS_FILE: &str = "counts";
+const USAGE_LOG_FILE: &str = "usage_log";
 const CONFIG_DIR: &str = ".config/eee";
+const THREE_DAYS_SECS: u64 = 3 * 24 * 60 * 60;
 
 fn config_dir() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME environment variable must be set");
@@ -36,6 +39,44 @@ fn history_path() -> PathBuf {
 
 fn counts_path() -> PathBuf {
     config_dir().join(COUNTS_FILE)
+}
+
+fn usage_log_path() -> PathBuf {
+    config_dir().join(USAGE_LOG_FILE)
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn append_usage_log(path: &PathBuf, name: &str) {
+    let entry = format!("{}\t{}\n", now_secs(), name);
+    let _ = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| f.write_all(entry.as_bytes()));
+}
+
+fn load_3day_counts(path: &PathBuf) -> HashMap<String, u64> {
+    let cutoff = now_secs().saturating_sub(THREE_DAYS_SECS);
+    let mut counts: HashMap<String, u64> = HashMap::new();
+    if let Ok(f) = fs::File::open(path) {
+        for line in BufReader::new(f).lines().map_while(Result::ok) {
+            let mut parts = line.splitn(2, '\t');
+            if let (Some(ts_str), Some(name)) = (parts.next(), parts.next()) {
+                if let Ok(ts) = ts_str.parse::<u64>() {
+                    if ts >= cutoff {
+                        *counts.entry(name.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+    }
+    counts
 }
 
 fn load_counts(path: &PathBuf) -> HashMap<String, u64> {
@@ -86,16 +127,22 @@ fn save_history(path: &PathBuf, history: &[String]) -> io::Result<()> {
     fs::write(path, content)
 }
 
-fn record_usage(history_path: &PathBuf, name: &str) {
+fn record_usage(history_path: &PathBuf, usage_log_path: &PathBuf, name: &str) {
     let mut history = load_history(history_path);
     history.retain(|h| h != name);
     history.insert(0, name.to_string());
     let _ = save_history(history_path, &history);
+    append_usage_log(usage_log_path, name);
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum SortMode {
+    Frequency,
+    Alphabetical,
 }
 
 /// Discover repos at ~/github.com/<org>/<repo> (two levels deep).
-/// Returns "org/repo" strings, sorted by MRU then alphabetically.
-fn discover_repos(base: &PathBuf, history: &[String]) -> Vec<String> {
+fn discover_repos(base: &PathBuf) -> Vec<String> {
     let mut repos: Vec<String> = Vec::new();
 
     let orgs = match fs::read_dir(base) {
@@ -123,20 +170,31 @@ fn discover_repos(base: &PathBuf, history: &[String]) -> Vec<String> {
     }
 
     repos.sort();
+    repos
+}
 
-    // MRU first, then remaining alphabetically
-    let mut result: Vec<String> = vec![];
-    for h in history {
-        if repos.contains(h) {
-            result.push(h.clone());
+fn sort_repos(repos: &[String], freq_counts: &HashMap<String, u64>, mode: SortMode) -> Vec<String> {
+    match mode {
+        SortMode::Alphabetical => repos.to_vec(),
+        SortMode::Frequency => {
+            let mut frequent: Vec<&String> = repos
+                .iter()
+                .filter(|r| freq_counts.get(r.as_str()).unwrap_or(&0) > &0)
+                .collect();
+            frequent.sort_by(|a, b| {
+                let ca = freq_counts.get(a.as_str()).unwrap_or(&0);
+                let cb = freq_counts.get(b.as_str()).unwrap_or(&0);
+                cb.cmp(ca).then(a.cmp(b))
+            });
+            let mut result: Vec<String> = frequent.into_iter().cloned().collect();
+            for r in repos {
+                if !result.contains(r) {
+                    result.push(r.clone());
+                }
+            }
+            result
         }
     }
-    for r in &repos {
-        if !result.contains(r) {
-            result.push(r.clone());
-        }
-    }
-    result
 }
 
 fn filter_repos<'a>(repos: &'a [String], query: &str) -> Vec<&'a String> {
@@ -157,24 +215,41 @@ enum Mode {
 }
 
 struct App {
+    all_repos: Vec<String>,
     repos: Vec<String>,
     query: String,
     selection: usize,
     scroll_offset: usize,
     mode: Mode,
     report_scroll: usize,
+    sort_mode: SortMode,
+    freq_counts: HashMap<String, u64>,
 }
 
 impl App {
-    fn new(repos: Vec<String>) -> Self {
+    fn new(all_repos: Vec<String>, freq_counts: HashMap<String, u64>) -> Self {
+        let repos = sort_repos(&all_repos, &freq_counts, SortMode::Frequency);
         App {
+            all_repos,
             repos,
             query: String::new(),
             selection: 0,
             scroll_offset: 0,
             mode: Mode::List,
             report_scroll: 0,
+            sort_mode: SortMode::Frequency,
+            freq_counts,
         }
+    }
+
+    fn toggle_sort(&mut self) {
+        self.sort_mode = match self.sort_mode {
+            SortMode::Frequency => SortMode::Alphabetical,
+            SortMode::Alphabetical => SortMode::Frequency,
+        };
+        self.repos = sort_repos(&self.all_repos, &self.freq_counts, self.sort_mode);
+        self.selection = 0;
+        self.scroll_offset = 0;
     }
 
     fn filtered(&self) -> Vec<&String> {
@@ -286,12 +361,19 @@ fn render_list<W: Write>(
     }
 
     // --- Footer ---
-    let footer = "  ↑↓ navigate  enter cd  r report  esc quit";
+    let sort_label = match app.sort_mode {
+        SortMode::Frequency => "freq",
+        SortMode::Alphabetical => "a-z",
+    };
+    let footer = format!(
+        "  ↑↓ navigate  enter cd  ^r report  ^e sort ({})  esc quit",
+        sort_label
+    );
     queue!(
         w,
         cursor::MoveTo(0, term_height - 1),
         SetForegroundColor(Color::DarkGrey),
-        Print(footer),
+        Print(&footer),
         ResetColor,
     )?;
 
@@ -408,8 +490,8 @@ fn run() -> io::Result<Option<String>> {
 
     let hist_path = history_path();
     let cnt_path = counts_path();
-    let history = load_history(&hist_path);
-    let repos = discover_repos(&base, &history);
+    let ulog_path = usage_log_path();
+    let repos = discover_repos(&base);
 
     if repos.is_empty() {
         eprintln!("eee: no repos found in ~/github.com");
@@ -417,6 +499,7 @@ fn run() -> io::Result<Option<String>> {
     }
 
     let counts = load_counts(&cnt_path);
+    let freq_counts = load_3day_counts(&ulog_path);
 
     let tty = fs::OpenOptions::new()
         .read(true)
@@ -427,7 +510,7 @@ fn run() -> io::Result<Option<String>> {
     enable_raw_mode()?;
     execute!(tty_write, EnterAlternateScreen, cursor::Hide)?;
 
-    let mut app = App::new(repos);
+    let mut app = App::new(repos, freq_counts);
     let result: io::Result<Option<String>> = (|| loop {
         let (term_width, term_height) = terminal::size()?;
 
@@ -515,7 +598,7 @@ fn run() -> io::Result<Option<String>> {
                         let filtered = app.filtered();
                         if let Some(name) = filtered.get(app.selection) {
                             let name = name.to_string();
-                            record_usage(&hist_path, &name);
+                            record_usage(&hist_path, &ulog_path, &name);
                             increment_count(&cnt_path, &name);
                             return Ok(Some(name));
                         }
@@ -546,11 +629,18 @@ fn run() -> io::Result<Option<String>> {
                     }
                     Event::Key(KeyEvent {
                         code: KeyCode::Char('r'),
-                        modifiers: KeyModifiers::NONE,
+                        modifiers: KeyModifiers::CONTROL,
                         ..
-                    }) if app.query.is_empty() => {
+                    }) => {
                         app.mode = Mode::Report;
                         app.report_scroll = 0;
+                    }
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('e'),
+                        modifiers: KeyModifiers::CONTROL,
+                        ..
+                    }) => {
+                        app.toggle_sort();
                     }
                     Event::Key(KeyEvent {
                         code: KeyCode::Char(c),
