@@ -18,7 +18,7 @@ use std::{
 
 const COMMANDS_FILE: &str = "commands";
 const COUNTS_FILE: &str = "counts";
-const CONFIG_DIR: &str = ".config/gg";
+const CONFIG_DIR: &str = ".config/rr";
 
 fn config_dir() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME environment variable must be set");
@@ -193,7 +193,7 @@ fn run_command(cmd: &Cmd, extra: &[String]) -> ! {
     match status {
         Ok(s) => process::exit(s.code().unwrap_or(1)),
         Err(e) => {
-            eprintln!("gg: failed to run command: {}", e);
+            eprintln!("rr: failed to run command: {}", e);
             process::exit(1);
         }
     }
@@ -204,8 +204,8 @@ fn print_commands_for(start: &str) {
     let dir = resolve_dir(&cmds, start);
     let here = commands_for(&cmds, &dir);
     if here.is_empty() {
-        eprintln!("gg: no commands configured for {}", dir);
-        eprintln!("    set one with:  gg set <command…>");
+        eprintln!("rr: no commands configured for {}", dir);
+        eprintln!("    set one with:  rr set <command…>");
         return;
     }
     let counts = load_counts();
@@ -231,7 +231,7 @@ fn print_commands_for(start: &str) {
 fn print_all_dirs() {
     let cmds = load_commands();
     if cmds.is_empty() {
-        eprintln!("gg: no commands configured anywhere");
+        eprintln!("rr: no commands configured anywhere");
         return;
     }
     let mut dirs: Vec<&String> = cmds.iter().map(|c| &c.path).collect();
@@ -263,18 +263,18 @@ fn print_all_dirs() {
 
 fn handle_set(rest: &[String]) {
     if rest.is_empty() {
-        eprintln!("gg: nothing to set");
-        eprintln!("    usage:  gg set <command…>            (default)");
-        eprintln!("            gg set <name> -- <command…>  (named)");
+        eprintln!("rr: nothing to set");
+        eprintln!("    usage:  rr set <command…>            (default)");
+        eprintln!("            rr set <name> -- <command…>  (named)");
         process::exit(1);
     }
 
-    // `gg set <name> -- <command…>` => named; otherwise the whole rest is the
+    // `rr set <name> -- <command…>` => named; otherwise the whole rest is the
     // default command.
     let (name, command) = match rest.iter().position(|a| a == "--") {
         Some(idx) => {
             if idx != 1 {
-                eprintln!("gg: the name before `--` must be a single token");
+                eprintln!("rr: the name before `--` must be a single token");
                 process::exit(1);
             }
             let name = rest[0].clone();
@@ -285,16 +285,16 @@ fn handle_set(rest: &[String]) {
     };
 
     if command.trim().is_empty() {
-        eprintln!("gg: empty command");
+        eprintln!("rr: empty command");
         process::exit(1);
     }
     if name.contains('\t') {
-        eprintln!("gg: command names may not contain tabs");
+        eprintln!("rr: command names may not contain tabs");
         process::exit(1);
     }
     if !name.is_empty() && is_reserved(&name) {
         eprintln!(
-            "gg: warning: '{}' is a reserved word — `gg {}` won't run it, use `gg list` to see it",
+            "rr: warning: '{}' is a reserved word — `rr {}` won't run it, use `rr list` to see it",
             name, name
         );
     }
@@ -311,26 +311,26 @@ fn handle_set(rest: &[String]) {
     cmds.sort_by(|a, b| a.path.cmp(&b.path).then(a.name.cmp(&b.name)));
 
     if let Err(e) = save_commands(&cmds) {
-        eprintln!("gg: failed to save: {}", e);
+        eprintln!("rr: failed to save: {}", e);
         process::exit(1);
     }
 
     let label = if name.is_empty() { "(default)" } else { &name };
     let verb = if existed { "replaced" } else { "set" };
-    eprintln!("gg: {} {} = {}", verb, label, command);
+    eprintln!("rr: {} {} = {}", verb, label, command);
 }
 
 fn handle_rm(rest: &[String]) {
     let mut cmds = load_commands();
-    // Resolve via walk-up so `gg rm` from a subdirectory targets the active
-    // command, mirroring how `gg` runs it.
+    // Resolve via walk-up so `rr rm` from a subdirectory targets the active
+    // command, mirroring how `rr` runs it.
     let dir = resolve_dir(&cmds, &cwd());
 
     if rest.iter().any(|a| a == "--all") {
         let before = cmds.len();
         cmds.retain(|c| c.path != dir);
         let _ = save_commands(&cmds);
-        eprintln!("gg: removed {} command(s) for {}", before - cmds.len(), dir);
+        eprintln!("rr: removed {} command(s) for {}", before - cmds.len(), dir);
         return;
     }
 
@@ -338,13 +338,13 @@ fn handle_rm(rest: &[String]) {
     let existed = cmds.iter().any(|c| c.path == dir && c.name == name);
     if !existed {
         let label = if name.is_empty() { "(default)" } else { &name };
-        eprintln!("gg: no command '{}' configured for {}", label, dir);
+        eprintln!("rr: no command '{}' configured for {}", label, dir);
         process::exit(1);
     }
     cmds.retain(|c| !(c.path == dir && c.name == name));
     let _ = save_commands(&cmds);
     let label = if name.is_empty() { "(default)" } else { &name };
-    eprintln!("gg: removed {}", label);
+    eprintln!("rr: removed {}", label);
 }
 
 fn handle_edit() {
@@ -364,30 +364,30 @@ fn handle_edit() {
 
 fn print_help() {
     println!(
-        "gg — per-directory command shortcuts
+        "rr — per-directory command shortcuts
 
 USAGE
-  gg                       run the default command for this directory
-  gg <name>                run the named command (e.g. gg build)
-  gg <name> [args…]        run it, appending extra args (e.g. gg test --watch)
-  gg set <command…>        set/replace the default command for this directory
-  gg set <name> -- <cmd…>  set/replace a named command
-  gg rm [name]             remove the default (or named) command
-  gg rm --all              remove every command for this directory
-  gg list [--all]          list commands for this dir (or all dirs)
-  gg edit                  open the config file in $EDITOR
-  gg report                show a usage report
-  gg help                  show this help
+  rr                       run the default command for this directory
+  rr <name>                run the named command (e.g. rr build)
+  rr <name> [args…]        run it, appending extra args (e.g. rr test --watch)
+  rr set <command…>        set/replace the default command for this directory
+  rr set <name> -- <cmd…>  set/replace a named command
+  rr rm [name]             remove the default (or named) command
+  rr rm --all              remove every command for this directory
+  rr list [--all]          list commands for this dir (or all dirs)
+  rr edit                  open the config file in $EDITOR
+  rr report                show a usage report
+  rr help                  show this help
 
 Lookups walk up to the nearest ancestor directory that has commands
 configured, so a config at a repo/monorepo root applies to every subdir.
-Running bare `gg` with no default but several named commands opens a picker.
+Running bare `rr` with no default but several named commands opens a picker.
 Commands run through $SHELL, so pipes, &&, and env expansion all work."
     );
 }
 
 // ---------------------------------------------------------------------------
-// Interactive picker (bare `gg` with no default) and usage report.
+// Interactive picker (bare `rr` with no default) and usage report.
 // ---------------------------------------------------------------------------
 
 fn filter_cmds<'a>(cmds: &'a [Cmd], query: &str) -> Vec<&'a Cmd> {
@@ -633,7 +633,7 @@ fn report() {
         .filter(|(_, n)| *n > 0)
         .collect();
     if entries.is_empty() {
-        eprintln!("gg: no usage recorded yet");
+        eprintln!("rr: no usage recorded yet");
         return;
     }
     entries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.command.cmp(&b.0.command)));
@@ -644,7 +644,7 @@ fn report() {
         .map(|(c, _)| c.command.len())
         .max()
         .unwrap_or(0);
-    println!("gg usage report");
+    println!("rr usage report");
     for (c, n) in entries {
         let bar_budget = 40usize;
         let bar_len = if max_count > 0 {
@@ -677,8 +677,8 @@ fn run_or_pick() -> ! {
     let here = commands_for(&cmds, &dir);
 
     if here.is_empty() {
-        eprintln!("gg: no command configured for {}", shorten(&dir));
-        eprintln!("    set one with:  gg set <command…>");
+        eprintln!("rr: no command configured for {}", shorten(&dir));
+        eprintln!("    set one with:  rr set <command…>");
         process::exit(1);
     }
 
@@ -696,7 +696,7 @@ fn run_or_pick() -> ! {
         Ok(Some(c)) => run_command(&c, &[]),
         Ok(None) => process::exit(0),
         Err(e) => {
-            eprintln!("gg: {}", e);
+            eprintln!("rr: {}", e);
             process::exit(1);
         }
     }
@@ -709,7 +709,7 @@ fn run_named(name: &str, extra: &[String]) -> ! {
     if let Some(c) = here.iter().find(|c| c.name == name) {
         run_command(c, extra);
     }
-    eprintln!("gg: no command '{}' configured for {}", name, shorten(&dir));
+    eprintln!("rr: no command '{}' configured for {}", name, shorten(&dir));
     if !here.is_empty() {
         let names: Vec<&str> = here.iter().map(|c| c.label()).collect();
         eprintln!("    available: {}", names.join(", "));

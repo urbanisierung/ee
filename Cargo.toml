@@ -12,8 +12,8 @@ name = "eee"
 path = "src/eee.rs"
 
 [[bin]]
-name = "gg"
-path = "src/gg.rs"
+name = "rr"
+path = "src/rr.rs"
 
 [dependencies]
 crossterm = "0.28"
