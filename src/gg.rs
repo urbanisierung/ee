@@ -112,6 +112,21 @@ fn commands_for(cmds: &[Cmd], dir: &str) -> Vec<Cmd> {
     here
 }
 
+/// Walk up from `start` (inclusive) and return the nearest ancestor directory
+/// that has any command configured. This lets a single config at a repo/monorepo
+/// root apply to every subdirectory. Falls back to `start` when nothing matches.
+fn resolve_dir(cmds: &[Cmd], start: &str) -> String {
+    let mut cur = Some(Path::new(start));
+    while let Some(p) = cur {
+        let s = p.to_string_lossy();
+        if cmds.iter().any(|c| c.path == s) {
+            return s.into_owned();
+        }
+        cur = p.parent();
+    }
+    start.to_string()
+}
+
 fn load_counts() -> HashMap<String, u64> {
     match fs::File::open(counts_path()) {
         Ok(f) => BufReader::new(f)
@@ -184,8 +199,10 @@ fn run_command(cmd: &Cmd, extra: &[String]) -> ! {
     }
 }
 
-fn print_commands_for(dir: &str) {
-    let here = commands_for(&load_commands(), dir);
+fn print_commands_for(start: &str) {
+    let cmds = load_commands();
+    let dir = resolve_dir(&cmds, start);
+    let here = commands_for(&cmds, &dir);
     if here.is_empty() {
         eprintln!("gg: no commands configured for {}", dir);
         eprintln!("    set one with:  gg set <command…>");
@@ -304,8 +321,10 @@ fn handle_set(rest: &[String]) {
 }
 
 fn handle_rm(rest: &[String]) {
-    let dir = cwd();
     let mut cmds = load_commands();
+    // Resolve via walk-up so `gg rm` from a subdirectory targets the active
+    // command, mirroring how `gg` runs it.
+    let dir = resolve_dir(&cmds, &cwd());
 
     if rest.iter().any(|a| a == "--all") {
         let before = cmds.len();
@@ -360,6 +379,8 @@ USAGE
   gg report                show a usage report
   gg help                  show this help
 
+Lookups walk up to the nearest ancestor directory that has commands
+configured, so a config at a repo/monorepo root applies to every subdir.
 Running bare `gg` with no default but several named commands opens a picker.
 Commands run through $SHELL, so pipes, &&, and env expansion all work."
     );
@@ -651,8 +672,9 @@ fn shorten(dir: &str) -> &str {
 }
 
 fn run_or_pick() -> ! {
-    let dir = cwd();
-    let here = commands_for(&load_commands(), &dir);
+    let cmds = load_commands();
+    let dir = resolve_dir(&cmds, &cwd());
+    let here = commands_for(&cmds, &dir);
 
     if here.is_empty() {
         eprintln!("gg: no command configured for {}", shorten(&dir));
@@ -681,8 +703,9 @@ fn run_or_pick() -> ! {
 }
 
 fn run_named(name: &str, extra: &[String]) -> ! {
-    let dir = cwd();
-    let here = commands_for(&load_commands(), &dir);
+    let cmds = load_commands();
+    let dir = resolve_dir(&cmds, &cwd());
+    let here = commands_for(&cmds, &dir);
     if let Some(c) = here.iter().find(|c| c.name == name) {
         run_command(c, extra);
     }

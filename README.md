@@ -76,7 +76,8 @@ Running bare `gg` in a directory that has named commands but no default opens a 
 
 - Commands run through `$SHELL -c`, so pipes, `&&`, and env expansion work.
 - The command's exit code is propagated.
-- Lookups match the current directory exactly (no walking up into parents).
+- Lookups walk up to the nearest ancestor directory that has commands configured, so a config at a repo/monorepo root applies to every subdirectory. `gg set` always writes to the current directory.
+- Commands run from the directory they were configured in.
 - Setting a command replaces any existing one in the same slot.
 
 ## Storage
