@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "eee"
 path = "src/eee.rs"
 
+[[bin]]
+name = "rr"
+path = "src/rr.rs"
+
 [dependencies]
 crossterm = "0.28"
 

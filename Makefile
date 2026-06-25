@@ -1,4 +1,4 @@
-BINARIES := ee eee
+BINARIES := ee eee rr
 INSTALL_DIR := $(HOME)/.local/share/omarchy/bin
 
 .PHONY: build release install clean
