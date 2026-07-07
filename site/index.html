@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ee tools — ee, eee, rr</title>
+<meta name="description" content="Three tiny terminal tools: fuzzy-pick and load env files (ee), jump into any cloned repo (eee), and run the right command per directory (rr).">
+<style>
+  :root {
+    --bg: #0f1115;
+    --surface: #171a21;
+    --surface-2: #1d212a;
+    --border: rgba(255,255,255,0.09);
+    --text: #e6e8eb;
+    --muted: #9aa1ac;
+    --accent: #7ee787;
+    --accent-dim: #4f9b5f;
+    --code-bg: #0b0d11;
+    --shadow: rgba(0,0,0,0.35);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #ffffff;
+      --surface: #f6f8fa;
+      --surface-2: #eef0f3;
+      --border: rgba(0,0,0,0.08);
+      --text: #1f2328;
+      --muted: #57606a;
+      --accent: #116329;
+      --accent-dim: #1a7f3c;
+      --code-bg: #f0f2f4;
+      --shadow: rgba(0,0,0,0.08);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1115; --surface: #171a21; --surface-2: #1d212a;
+    --border: rgba(255,255,255,0.09); --text: #e6e8eb; --muted: #9aa1ac;
+    --accent: #7ee787; --accent-dim: #4f9b5f; --code-bg: #0b0d11; --shadow: rgba(0,0,0,0.35);
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eef0f3;
+    --border: rgba(0,0,0,0.08); --text: #1f2328; --muted: #57606a;
+    --accent: #116329; --accent-dim: #1a7f3c; --code-bg: #f0f2f4; --shadow: rgba(0,0,0,0.08);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    line-height: 1.55;
+    font-size: 16px;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+
+  header.hero {
+    padding: 72px 0 48px;
+    border-bottom: 1px solid var(--border);
+  }
+  .hero h1 {
+    font-size: 2.4rem;
+    margin: 0 0 8px;
+    letter-spacing: -0.02em;
+  }
+  .hero h1 .dim { color: var(--muted); font-weight: 400; }
+  .hero p.tagline {
+    color: var(--muted);
+    font-size: 1.05rem;
+    max-width: 60ch;
+    margin: 0 0 28px;
+  }
+
+  .install-box {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    max-width: 640px;
+  }
+  .install-box code {
+    flex: 1;
+    min-width: 0;
+    color: var(--accent);
+    font-size: 0.95rem;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .copy-btn {
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .copy-btn:hover { background: var(--surface); }
+
+  .hero-links { margin-top: 18px; color: var(--muted); font-size: 0.92rem; }
+  .hero-links a { margin-right: 18px; }
+
+  section { padding: 56px 0; border-bottom: 1px solid var(--border); }
+  section:last-of-type { border-bottom: none; }
+  section h2 {
+    font-size: 1.5rem;
+    margin: 0 0 28px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  section h2 .num { color: var(--muted); font-weight: 400; font-size: 1rem; }
+
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  @media (max-width: 760px) { .cards { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .card h3 { margin: 0 0 10px; font-size: 1.05rem; }
+  .card h3 code { color: var(--accent); }
+  .card p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+
+  .tool-block { margin-bottom: 48px; }
+  .tool-block:last-child { margin-bottom: 0; }
+  .tool-block h3 {
+    font-size: 1.25rem;
+    margin: 0 0 6px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .tool-block h3 code { color: var(--accent); }
+  .tool-block .desc { color: var(--muted); margin: 0 0 16px; font-size: 0.95rem; }
+
+  .shot {
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin: 0 0 18px;
+    box-shadow: 0 8px 24px var(--shadow);
+  }
+
+  table.keys {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+    margin: 0 0 20px;
+  }
+  table.keys th, table.keys td {
+    text-align: left;
+    padding: 6px 12px 6px 0;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
+  }
+  table.keys th { color: var(--text); font-weight: 600; }
+  table.keys td:first-child { color: var(--accent); white-space: nowrap; }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 0.88rem;
+    margin: 0 0 16px;
+  }
+  code { font-family: inherit; overflow-wrap: break-word; }
+  p code, li code, td code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+
+  .callout {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent-dim);
+    border-radius: 6px;
+    padding: 14px 16px;
+    font-size: 0.9rem;
+    color: var(--muted);
+    margin: 16px 0;
+  }
+  .callout strong { color: var(--text); }
+
+  .flags { color: var(--muted); font-size: 0.88rem; margin: 8px 0 20px; }
+  .flags code { color: var(--text); }
+
+  table.storage {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  table.storage th, table.storage td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    overflow-wrap: break-word;
+  }
+  table.storage th { color: var(--muted); font-weight: 600; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  table.storage td:first-child code { color: var(--accent); }
+  table.storage col.tool { width: 16%; }
+  table.storage col.data { width: 42%; }
+  table.storage col.loc { width: 42%; }
+  @media (max-width: 600px) {
+    table.storage col.tool { width: 22%; }
+    table.storage col.data { width: 38%; }
+    table.storage col.loc { width: 40%; }
+  }
+
+  footer {
+    padding: 40px 0 60px;
+    color: var(--muted);
+    font-size: 0.88rem;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  footer a { color: var(--muted); }
+  footer a:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <h1>ee <span class="dim">/</span> eee <span class="dim">/</span> rr</h1>
+    <p class="tagline">
+      Three tiny, single-binary terminal tools: fuzzy-pick and load env files,
+      jump straight into any cloned repo, and run the right command for
+      whatever directory you're in. No plugin frameworks, no config to
+      hand-edit — just three small Rust binaries.
+    </p>
+
+    <div class="install-box">
+      <code id="install-cmd">curl -fsSL https://ee.u11g.com/install.sh | sh</code>
+      <button class="copy-btn" onclick="copyInstall()" id="copy-btn">copy</button>
+    </div>
+
+    <div class="hero-links">
+      <a href="https://github.com/urbanisierung/ee">GitHub →</a>
+      <a href="https://github.com/urbanisierung/ee/releases/latest">Latest release →</a>
+      <a href="#how">Other install options →</a>
+    </div>
+  </div>
+</header>
+
+<section id="why">
+  <div class="wrap">
+    <h2><span class="num">01</span> Why</h2>
+    <div class="cards">
+      <div class="card">
+        <h3><code>ee</code></h3>
+        <p>Stop hand-<code>source</code>-ing env files. Fuzzy-pick one from
+        <code>~/.config/envvars/</code> and load it into your shell in two
+        keystrokes.</p>
+      </div>
+      <div class="card">
+        <h3><code>eee</code></h3>
+        <p>Jump to any cloned repo under <code>~/github.com/&lt;org&gt;/&lt;repo&gt;</code>
+        without <code>cd</code> gymnastics or remembering exact paths.</p>
+      </div>
+      <div class="card">
+        <h3><code>rr</code></h3>
+        <p>Remember the right command per project — <code>pnpm dev</code>,
+        <code>go run ./cmd/server</code>, whatever — and run it with a single
+        keystroke from that directory.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="what">
+  <div class="wrap">
+    <h2><span class="num">02</span> What</h2>
+
+    <div class="tool-block">
+      <h3><code>ee</code> — env file picker</h3>
+      <p class="desc">A full-screen TUI over <code>~/.config/envvars/*</code>.
+      Selecting a file prints <code>source &lt;path&gt;</code> for your shell
+      to evaluate. Tracks most-recently-used order and per-file usage counts.</p>
+      <img class="shot" src="demos/ee.png" alt="ee TUI: filtering env files by 'prod', showing prod.env selected" loading="lazy">
+      <table class="keys">
+        <tr><th>Key</th><th>Action</th></tr>
+        <tr><td>Type</td><td>Filter list</td></tr>
+        <tr><td>Backspace</td><td>Delete last character</td></tr>
+        <tr><td>↑ / ↓</td><td>Move selection</td></tr>
+        <tr><td>→</td><td>Preview file contents</td></tr>
+        <tr><td>Enter</td><td>Source selected file</td></tr>
+        <tr><td>Ctrl-E</td><td>Open selected file in <code>$EDITOR</code></td></tr>
+        <tr><td>Ctrl-R</td><td>Show usage report</td></tr>
+        <tr><td>Esc</td><td>Quit without output</td></tr>
+      </table>
+    </div>
+
+    <div class="tool-block">
+      <h3><code>eee</code> — repo picker</h3>
+      <p class="desc">Discovers repos two levels deep under
+      <code>~/github.com/&lt;org&gt;/&lt;repo&gt;</code> — no registration
+      step. Selecting one prints <code>cd &lt;path&gt;</code>. Sorts by
+      3-day usage frequency by default, toggle to alphabetical.</p>
+      <img class="shot" src="demos/eee.png" alt="eee TUI: repo list sorted by frequency, showing run counts next to acme/backend and acme/frontend" loading="lazy">
+      <table class="keys">
+        <tr><th>Key</th><th>Action</th></tr>
+        <tr><td>Type</td><td>Filter list</td></tr>
+        <tr><td>↑ / ↓</td><td>Move selection</td></tr>
+        <tr><td>Enter</td><td><code>cd</code> into selected repo</td></tr>
+        <tr><td>Ctrl-R</td><td>Show usage report</td></tr>
+        <tr><td>Ctrl-E</td><td>Toggle sort: recency vs. alphabetical</td></tr>
+        <tr><td>Esc</td><td>Quit without output</td></tr>
+      </table>
+    </div>
+
+    <div class="tool-block">
+      <h3><code>rr</code> — per-directory command shortcuts</h3>
+      <p class="desc">Set a default (and any number of named) commands per
+      directory. Bare <code>rr</code> runs the default, or opens a picker if
+      there's no default but several named commands. Lookups walk up to the
+      nearest configured ancestor, so one config at a repo root covers every
+      subdirectory.</p>
+      <img class="shot" src="demos/rr.png" alt="rr TUI: picker showing build and test commands with run counts for a frontend project" loading="lazy">
+      <pre>rr                       # run the default command for this directory
+rr &lt;name&gt;                # run a named command, e.g. rr build
+rr &lt;name&gt; [args…]        # run it with extra args, e.g. rr test --watch
+rr set &lt;command…&gt;        # set/replace the default command for this directory
+rr set &lt;name&gt; -- &lt;cmd…&gt;  # set/replace a named command
+rr rm [name]             # remove the default (or named) command
+rr rm --all              # remove every command for this directory
+rr list [--all]          # list commands for this dir (or all dirs)
+rr edit                  # open the config file in $EDITOR
+rr report                # show a usage report</pre>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <h2><span class="num">03</span> How</h2>
+
+    <h3 style="margin-top:0">Install</h3>
+    <pre>curl -fsSL https://ee.u11g.com/install.sh | sh</pre>
+    <p>Downloads the right release archive for your platform (Linux or
+    macOS), verifies its checksum, installs <code>ee</code>/<code>eee</code>/<code>rr</code>
+    to <code>~/.local/bin</code>, and — unless skipped — wires up the shell
+    integration below automatically.</p>
+    <div class="flags">
+      Flags: <code>--no-shell</code> (skip rc-file editing), <code>--bin-dir DIR</code>
+      (custom install location), <code>--uninstall</code>. Pin a version with
+      <code>EE_VERSION=v0.2.0</code>.
+    </div>
+
+    <h3>From source</h3>
+    <pre>git clone https://github.com/urbanisierung/ee.git
+cd ee
+make install                 # builds and copies to ~/.local/bin
+
+# or, without cloning:
+cargo install --git https://github.com/urbanisierung/ee</pre>
+    <p>Either way, this only installs the binaries — you still need the
+    shell integration below for <code>ee</code>/<code>eee</code>.</p>
+
+    <h3>Shell integration</h3>
+    <p>Add to <code>~/.bashrc</code> / <code>~/.zshrc</code>:</p>
+    <pre>ee()  { eval "$(command ee  "$@")"; }
+eee() { eval "$(command eee "$@")"; }</pre>
+    <p>or to <code>~/.config/fish/config.fish</code>:</p>
+    <pre>function ee;  eval (command ee  $argv); end
+function eee; eval (command eee $argv); end</pre>
+    <p><code>rr</code> needs no wrapper — it runs directly.</p>
+
+    <div class="callout">
+      <strong>Why does this need a shell function at all?</strong>
+      <code>ee</code> and <code>eee</code> pick a file/repo and then need
+      <em>your current shell</em> to <code>source</code> a file or
+      <code>cd</code> into a directory. A child process can't do that to its
+      parent shell — that's an OS-level restriction, not a limitation of these
+      tools. So each binary prints the command it wants run
+      (<code>source &lt;path&gt;</code> / <code>cd &lt;path&gt;</code>) to
+      stdout, and the wrapper function evaluates it in your shell. The install
+      script sets this up automatically; once it's there you just type
+      <code>ee</code> / <code>eee</code> like any other command.
+    </div>
+
+    <h3>Getting started with <code>rr</code></h3>
+    <pre>cd ~/work/api    && rr set pnpm dev
+cd ~/work/worker && rr set pnpm run start:force
+cd ~/work/api    && rr          # runs: pnpm dev</pre>
+  </div>
+</section>
+
+<section id="config">
+  <div class="wrap">
+    <h2><span class="num">04</span> Config &amp; storage</h2>
+    <table class="storage">
+      <colgroup>
+        <col class="tool"><col class="data"><col class="loc">
+      </colgroup>
+      <tr><th>Tool</th><th>Data</th><th>Location</th></tr>
+      <tr><td><code>ee</code></td><td>env files, MRU history, usage counts</td><td><code>~/.config/envvars/</code></td></tr>
+      <tr><td><code>eee</code></td><td>history, usage counts</td><td><code>~/.config/eee/</code></td></tr>
+      <tr><td><code>eee</code></td><td>repos it picks from</td><td><code>~/github.com/&lt;org&gt;/&lt;repo&gt;</code></td></tr>
+      <tr><td><code>rr</code></td><td>commands, usage counts</td><td><code>~/.config/rr/</code></td></tr>
+    </table>
+    <p style="color:var(--muted); font-size:0.9rem; margin-top:14px;">Nothing is written outside these directories.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap" style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px; width:100%;">
+    <span>MIT licensed &middot; <a href="https://github.com/urbanisierung/ee/blob/main/LICENSE">LICENSE</a></span>
+    <span><a href="https://github.com/urbanisierung/ee">github.com/urbanisierung/ee</a></span>
+  </div>
+</footer>
+
+<script>
+  function copyInstall() {
+    var text = document.getElementById('install-cmd').textContent;
+    var btn = document.getElementById('copy-btn');
+    navigator.clipboard.writeText(text).then(function () {
+      var original = btn.textContent;
+      btn.textContent = 'copied!';
+      setTimeout(function () { btn.textContent = original; }, 1500);
+    });
+  }
+</script>
+
+</body>
+</html>

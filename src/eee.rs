@@ -11,7 +11,7 @@ use crossterm::{
 use std::{
     collections::HashMap,
     fs,
-    io::{self, BufRead, BufReader, Write},
+    io::{self, BufReader, Write},
     path::PathBuf,
     process,
     time::{SystemTime, UNIX_EPOCH},
@@ -63,46 +63,21 @@ fn append_usage_log(path: &PathBuf, name: &str) {
 
 fn load_3day_counts(path: &PathBuf) -> HashMap<String, u64> {
     let cutoff = now_secs().saturating_sub(THREE_DAYS_SECS);
-    let mut counts: HashMap<String, u64> = HashMap::new();
-    if let Ok(f) = fs::File::open(path) {
-        for line in BufReader::new(f).lines().map_while(Result::ok) {
-            let mut parts = line.splitn(2, '\t');
-            if let (Some(ts_str), Some(name)) = (parts.next(), parts.next()) {
-                if let Ok(ts) = ts_str.parse::<u64>() {
-                    if ts >= cutoff {
-                        *counts.entry(name.to_string()).or_insert(0) += 1;
-                    }
-                }
-            }
-        }
+    match fs::File::open(path) {
+        Ok(f) => ee_tools::parse_windowed_counts(BufReader::new(f), cutoff),
+        Err(_) => HashMap::new(),
     }
-    counts
 }
 
 fn load_counts(path: &PathBuf) -> HashMap<String, u64> {
     match fs::File::open(path) {
-        Ok(f) => BufReader::new(f)
-            .lines()
-            .map_while(Result::ok)
-            .filter_map(|l| {
-                let mut parts = l.splitn(2, '\t');
-                let name = parts.next()?.to_string();
-                let count = parts.next()?.parse::<u64>().ok()?;
-                Some((name, count))
-            })
-            .collect(),
+        Ok(f) => ee_tools::parse_counts(BufReader::new(f)),
         Err(_) => HashMap::new(),
     }
 }
 
 fn save_counts(path: &PathBuf, counts: &HashMap<String, u64>) -> io::Result<()> {
-    let content: String = counts
-        .iter()
-        .map(|(name, count)| format!("{}\t{}", name, count))
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-    fs::write(path, content)
+    fs::write(path, ee_tools::format_counts(counts))
 }
 
 fn increment_count(path: &PathBuf, name: &str) {
@@ -113,29 +88,23 @@ fn increment_count(path: &PathBuf, name: &str) {
 
 fn load_history(path: &PathBuf) -> Vec<String> {
     match fs::File::open(path) {
-        Ok(f) => BufReader::new(f)
-            .lines()
-            .map_while(Result::ok)
-            .filter(|l| !l.trim().is_empty())
-            .collect(),
+        Ok(f) => ee_tools::parse_history(BufReader::new(f)),
         Err(_) => vec![],
     }
 }
 
 fn save_history(path: &PathBuf, history: &[String]) -> io::Result<()> {
-    let content = history.join("\n") + "\n";
-    fs::write(path, content)
+    fs::write(path, ee_tools::format_history(history))
 }
 
 fn record_usage(history_path: &PathBuf, usage_log_path: &PathBuf, name: &str) {
     let mut history = load_history(history_path);
-    history.retain(|h| h != name);
-    history.insert(0, name.to_string());
+    ee_tools::record_mru(&mut history, name);
     let _ = save_history(history_path, &history);
     append_usage_log(usage_log_path, name);
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum SortMode {
     Frequency,
     Alphabetical,
@@ -198,15 +167,7 @@ fn sort_repos(repos: &[String], freq_counts: &HashMap<String, u64>, mode: SortMo
 }
 
 fn filter_repos<'a>(repos: &'a [String], query: &str) -> Vec<&'a String> {
-    let q = query.to_lowercase();
-    if q.is_empty() {
-        repos.iter().collect()
-    } else {
-        repos
-            .iter()
-            .filter(|r| r.to_lowercase().contains(&q))
-            .collect()
-    }
+    ee_tools::filter_by_substring(repos, query, |r| r.as_str())
 }
 
 enum Mode {
@@ -690,5 +651,67 @@ fn main() {
             eprintln!("eee: error: {}", e);
             process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repos(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn sort_repos_alphabetical_is_passthrough() {
+        let r = repos(&["b/two", "a/one"]);
+        let sorted = sort_repos(&r, &HashMap::new(), SortMode::Alphabetical);
+        assert_eq!(sorted, r);
+    }
+
+    #[test]
+    fn sort_repos_frequency_ranks_used_repos_first() {
+        let r = repos(&["a/one", "b/two", "c/three"]);
+        let mut counts = HashMap::new();
+        counts.insert("c/three".to_string(), 5u64);
+        counts.insert("a/one".to_string(), 2u64);
+        let sorted = sort_repos(&r, &counts, SortMode::Frequency);
+        assert_eq!(sorted, repos(&["c/three", "a/one", "b/two"]));
+    }
+
+    #[test]
+    fn sort_repos_frequency_ties_break_alphabetically() {
+        let r = repos(&["b/two", "a/one"]);
+        let mut counts = HashMap::new();
+        counts.insert("b/two".to_string(), 1u64);
+        counts.insert("a/one".to_string(), 1u64);
+        let sorted = sort_repos(&r, &counts, SortMode::Frequency);
+        assert_eq!(sorted, repos(&["a/one", "b/two"]));
+    }
+
+    #[test]
+    fn filter_repos_is_case_insensitive_substring() {
+        let r = repos(&["org/Frontend", "org/backend"]);
+        let result = filter_repos(&r, "FRONT");
+        assert_eq!(result, vec![&"org/Frontend".to_string()]);
+    }
+
+    #[test]
+    fn toggle_sort_flips_mode_and_resets_selection() {
+        let mut app = App::new(repos(&["a/one", "b/two"]), HashMap::new());
+        app.selection = 1;
+        assert_eq!(app.sort_mode, SortMode::Frequency);
+        app.toggle_sort();
+        assert_eq!(app.sort_mode, SortMode::Alphabetical);
+        assert_eq!(app.selection, 0);
+    }
+
+    #[test]
+    fn clamp_selection_pulls_back_into_range_after_filter_shrinks() {
+        let mut app = App::new(repos(&["a/one", "b/two"]), HashMap::new());
+        app.selection = 1;
+        app.query = "zzz".to_string();
+        app.clamp_selection();
+        assert_eq!(app.selection, 0);
     }
 }
