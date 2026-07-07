@@ -2,6 +2,18 @@
 name = "ee"
 version = "0.1.0"
 edition = "2021"
+description = "ee, eee, rr — tiny terminal tools for env files, repo hopping, and per-directory commands"
+repository = "https://github.com/urbanisierung/ee"
+homepage = "https://github.com/urbanisierung/ee"
+license = "MIT"
+readme = "README.md"
+keywords = ["cli", "tui", "productivity", "shell", "dotfiles"]
+categories = ["command-line-utilities"]
+authors = ["Adam Urban"]
+
+[lib]
+name = "ee_tools"
+path = "src/lib.rs"
 
 [[bin]]
 name = "ee"

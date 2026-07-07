@@ -65,27 +65,32 @@ impl Cmd {
     }
 }
 
+/// Parse one "path\tname\tcommand" line (command may itself contain tabs).
+fn parse_command_line(line: &str) -> Option<Cmd> {
+    if line.trim().is_empty() {
+        return None;
+    }
+    let mut parts = line.splitn(3, '\t');
+    let path = parts.next()?.to_string();
+    let name = parts.next()?.to_string();
+    let command = parts.next()?.to_string();
+    Some(Cmd {
+        path,
+        name,
+        command,
+    })
+}
+
+fn format_command_line(c: &Cmd) -> String {
+    format!("{}\t{}\t{}", c.path, c.name, c.command)
+}
+
 fn load_commands() -> Vec<Cmd> {
-    let path = commands_path();
-    match fs::File::open(&path) {
+    match fs::File::open(commands_path()) {
         Ok(f) => BufReader::new(f)
             .lines()
             .map_while(Result::ok)
-            .filter_map(|l| {
-                if l.trim().is_empty() {
-                    return None;
-                }
-                // path \t name \t command   (command may itself contain tabs)
-                let mut parts = l.splitn(3, '\t');
-                let path = parts.next()?.to_string();
-                let name = parts.next()?.to_string();
-                let command = parts.next()?.to_string();
-                Some(Cmd {
-                    path,
-                    name,
-                    command,
-                })
-            })
+            .filter_map(|l| parse_command_line(&l))
             .collect(),
         Err(_) => vec![],
     }
@@ -98,7 +103,7 @@ fn save_commands(cmds: &[Cmd]) -> io::Result<()> {
     }
     let content: String = cmds
         .iter()
-        .map(|c| format!("{}\t{}\t{}", c.path, c.name, c.command))
+        .map(format_command_line)
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
@@ -127,18 +132,21 @@ fn resolve_dir(cmds: &[Cmd], start: &str) -> String {
     start.to_string()
 }
 
+/// Parse one "key\tcount" line, splitting from the right since `key` (a
+/// `path\tname` composite) may itself contain a tab.
+fn parse_count_line(line: &str) -> Option<(String, u64)> {
+    let mut parts = line.rsplitn(2, '\t');
+    let count = parts.next()?.parse::<u64>().ok()?;
+    let key = parts.next()?.to_string();
+    Some((key, count))
+}
+
 fn load_counts() -> HashMap<String, u64> {
     match fs::File::open(counts_path()) {
         Ok(f) => BufReader::new(f)
             .lines()
             .map_while(Result::ok)
-            .filter_map(|l| {
-                // path \t name \t count
-                let mut parts = l.rsplitn(2, '\t');
-                let count = parts.next()?.parse::<u64>().ok()?;
-                let key = parts.next()?.to_string();
-                Some((key, count))
-            })
+            .filter_map(|l| parse_count_line(&l))
             .collect(),
         Err(_) => HashMap::new(),
     }
@@ -742,5 +750,139 @@ fn main() {
         Some("edit") => handle_edit(),
         Some("report") => report(),
         Some(name) => run_named(name, &args[1..]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cmd(path: &str, name: &str, command: &str) -> Cmd {
+        Cmd {
+            path: path.to_string(),
+            name: name.to_string(),
+            command: command.to_string(),
+        }
+    }
+
+    #[test]
+    fn parse_command_line_splits_on_first_two_tabs_only() {
+        let c = parse_command_line("/repo\tbuild\tpnpm run build --watch").unwrap();
+        assert_eq!(c.path, "/repo");
+        assert_eq!(c.name, "build");
+        assert_eq!(c.command, "pnpm run build --watch");
+    }
+
+    #[test]
+    fn parse_command_line_skips_blank_lines() {
+        assert!(parse_command_line("").is_none());
+        assert!(parse_command_line("   ").is_none());
+    }
+
+    #[test]
+    fn command_line_round_trip() {
+        let c = cmd("/a/b", "test", "pnpm test --watch");
+        let line = format_command_line(&c);
+        let parsed = parse_command_line(&line).unwrap();
+        assert_eq!(parsed.path, c.path);
+        assert_eq!(parsed.name, c.name);
+        assert_eq!(parsed.command, c.command);
+    }
+
+    #[test]
+    fn parse_count_line_handles_tab_containing_key() {
+        // key is itself "path\tname" — must split from the right.
+        let (key, count) = parse_count_line("/repo\tbuild\t42").unwrap();
+        assert_eq!(key, "/repo\tbuild");
+        assert_eq!(count, 42);
+    }
+
+    #[test]
+    fn parse_count_line_rejects_malformed_input() {
+        assert!(parse_count_line("notanumber").is_none());
+    }
+
+    #[test]
+    fn commands_for_filters_by_path_and_sorts_by_name() {
+        let cmds = vec![
+            cmd("/a", "test", "pnpm test"),
+            cmd("/a", "", "pnpm dev"),
+            cmd("/b", "build", "make"),
+        ];
+        let here = commands_for(&cmds, "/a");
+        assert_eq!(here.len(), 2);
+        assert_eq!(here[0].name, ""); // default sorts before "test" alphabetically
+        assert_eq!(here[1].name, "test");
+    }
+
+    #[test]
+    fn resolve_dir_finds_nearest_configured_ancestor() {
+        let cmds = vec![cmd("/repo", "", "pnpm dev")];
+        assert_eq!(resolve_dir(&cmds, "/repo/src/deep"), "/repo");
+        assert_eq!(resolve_dir(&cmds, "/repo"), "/repo");
+    }
+
+    #[test]
+    fn resolve_dir_falls_back_to_start_when_nothing_configured() {
+        let cmds = vec![cmd("/other", "", "pnpm dev")];
+        assert_eq!(resolve_dir(&cmds, "/repo/src"), "/repo/src");
+    }
+
+    #[test]
+    fn resolve_dir_prefers_closest_ancestor_over_root() {
+        let cmds = vec![
+            cmd("/repo", "", "root cmd"),
+            cmd("/repo/pkg", "", "pkg cmd"),
+        ];
+        assert_eq!(resolve_dir(&cmds, "/repo/pkg/deep"), "/repo/pkg");
+    }
+
+    #[test]
+    fn filter_cmds_matches_name_or_command() {
+        let cmds = vec![
+            cmd("/a", "build", "pnpm run build"),
+            cmd("/a", "test", "pnpm run test --watch"),
+        ];
+        let by_name = filter_cmds(&cmds, "build");
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_name[0].name, "build");
+
+        let by_command = filter_cmds(&cmds, "watch");
+        assert_eq!(by_command.len(), 1);
+        assert_eq!(by_command[0].name, "test");
+    }
+
+    #[test]
+    fn is_reserved_matches_subcommands_only() {
+        assert!(is_reserved("set"));
+        assert!(is_reserved("help"));
+        assert!(!is_reserved("build"));
+    }
+
+    #[test]
+    fn cmd_label_shows_default_marker_for_empty_name() {
+        assert_eq!(cmd("/a", "", "x").label(), "(default)");
+        assert_eq!(cmd("/a", "build", "x").label(), "build");
+    }
+
+    #[test]
+    fn cmd_count_key_combines_path_and_name() {
+        assert_eq!(cmd("/a", "build", "x").count_key(), "/a\tbuild");
+    }
+
+    #[test]
+    fn picker_adjust_scroll_tracks_selection() {
+        let mut picker = Picker {
+            cmds: vec![
+                cmd("/a", "one", "x"),
+                cmd("/a", "two", "x"),
+                cmd("/a", "three", "x"),
+            ],
+            query: String::new(),
+            selection: 2,
+            scroll_offset: 0,
+        };
+        picker.adjust_scroll(1);
+        assert_eq!(picker.scroll_offset, 2);
     }
 }

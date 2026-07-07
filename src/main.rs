@@ -36,28 +36,13 @@ fn counts_path() -> PathBuf {
 
 fn load_counts(path: &PathBuf) -> HashMap<String, u64> {
     match fs::File::open(path) {
-        Ok(f) => BufReader::new(f)
-            .lines()
-            .map_while(Result::ok)
-            .filter_map(|l| {
-                let mut parts = l.splitn(2, '\t');
-                let name = parts.next()?.to_string();
-                let count = parts.next()?.parse::<u64>().ok()?;
-                Some((name, count))
-            })
-            .collect(),
+        Ok(f) => ee_tools::parse_counts(BufReader::new(f)),
         Err(_) => HashMap::new(),
     }
 }
 
 fn save_counts(path: &PathBuf, counts: &HashMap<String, u64>) -> io::Result<()> {
-    let content: String = counts
-        .iter()
-        .map(|(name, count)| format!("{}\t{}", name, count))
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-    fs::write(path, content)
+    fs::write(path, ee_tools::format_counts(counts))
 }
 
 fn increment_count(path: &PathBuf, filename: &str) {
@@ -69,26 +54,20 @@ fn increment_count(path: &PathBuf, filename: &str) {
 /// Load the MRU history list (filenames only, not paths).
 fn load_history(path: &PathBuf) -> Vec<String> {
     match fs::File::open(path) {
-        Ok(f) => BufReader::new(f)
-            .lines()
-            .map_while(Result::ok)
-            .filter(|l| !l.trim().is_empty())
-            .collect(),
+        Ok(f) => ee_tools::parse_history(BufReader::new(f)),
         Err(_) => vec![],
     }
 }
 
 /// Persist a new history list (most recent first).
 fn save_history(path: &PathBuf, history: &[String]) -> io::Result<()> {
-    let content = history.join("\n") + "\n";
-    fs::write(path, content)
+    fs::write(path, ee_tools::format_history(history))
 }
 
 /// Record a file as most recently used.
 fn record_usage(history_path: &PathBuf, filename: &str) {
     let mut history = load_history(history_path);
-    history.retain(|h| h != filename);
-    history.insert(0, filename.to_string());
+    ee_tools::record_mru(&mut history, filename);
     let _ = save_history(history_path, &history);
 }
 
@@ -111,32 +90,12 @@ fn discover_files(dir: &PathBuf, history: &[String]) -> Vec<String> {
         Err(_) => vec![],
     };
 
-    // MRU first (only those present in entries), then remaining alphabetically
-    let mut result: Vec<String> = vec![];
-    for h in history {
-        if entries.contains(h) {
-            result.push(h.clone());
-        }
-    }
-    for e in &entries {
-        if !result.contains(e) {
-            result.push(e.clone());
-        }
-    }
-    result
+    ee_tools::mru_order(&entries, history)
 }
 
 /// Filter files by case-insensitive substring query.
 fn filter_files<'a>(files: &'a [String], query: &str) -> Vec<&'a String> {
-    let q = query.to_lowercase();
-    if q.is_empty() {
-        files.iter().collect()
-    } else {
-        files
-            .iter()
-            .filter(|f| f.to_lowercase().contains(&q))
-            .collect()
-    }
+    ee_tools::filter_by_substring(files, query, |f| f.as_str())
 }
 
 /// Read a file into a vec of lines for the preview.
@@ -818,5 +777,55 @@ fn main() {
             eprintln!("ee: error: {}", e);
             process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_with(files: Vec<&str>) -> App {
+        App::new(files.into_iter().map(String::from).collect())
+    }
+
+    #[test]
+    fn filter_files_is_case_insensitive_substring() {
+        let files = vec!["prod.env".to_string(), "staging.env".to_string()];
+        let result = filter_files(&files, "STAGING");
+        assert_eq!(result, vec![&"staging.env".to_string()]);
+    }
+
+    #[test]
+    fn clamp_selection_pulls_back_into_range_after_filter_shrinks() {
+        let mut app = app_with(vec!["alpha", "beta", "gamma"]);
+        app.selection = 2;
+        app.query = "zzz".to_string(); // filters everything out
+        app.clamp_selection();
+        assert_eq!(app.selection, 0);
+    }
+
+    #[test]
+    fn clamp_selection_leaves_valid_selection_untouched() {
+        let mut app = app_with(vec!["alpha", "beta", "gamma"]);
+        app.selection = 1;
+        app.clamp_selection();
+        assert_eq!(app.selection, 1);
+    }
+
+    #[test]
+    fn adjust_scroll_scrolls_down_when_selection_passes_view() {
+        let mut app = app_with(vec!["a", "b", "c", "d", "e"]);
+        app.selection = 4;
+        app.adjust_scroll(2);
+        assert_eq!(app.scroll_offset, 3);
+    }
+
+    #[test]
+    fn adjust_scroll_scrolls_up_when_selection_moves_above_view() {
+        let mut app = app_with(vec!["a", "b", "c", "d", "e"]);
+        app.scroll_offset = 3;
+        app.selection = 1;
+        app.adjust_scroll(2);
+        assert_eq!(app.scroll_offset, 1);
     }
 }

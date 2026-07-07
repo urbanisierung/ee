@@ -1,0 +1,51 @@
+name: Deploy site
+
+# Deploys the static landing page (site/) plus install.sh to Cloudflare
+# Pages on every push to main.
+#
+# Required setup (see PLAN.md "User setup checklist"):
+#   1. Create a Cloudflare Pages project (any name; direct-upload is fine,
+#      no need to connect it to the git repo — this workflow pushes builds).
+#   2. Add repo secrets: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
+#   3. Optionally set repo variable CLOUDFLARE_PAGES_PROJECT to the project's
+#      name (defaults to "ee-tools" below if unset).
+#
+# Alternative: skip this workflow entirely and instead connect the repo
+# directly in the Cloudflare Pages dashboard with build output = "site" (and
+# a build step to copy install.sh in, or just accept the site linking to
+# the repo-root install.sh raw URL instead).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "install.sh"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage site
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp -r site/. dist/
+          cp install.sh dist/install.sh
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'ee-tools' }}
+          directory: dist
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
