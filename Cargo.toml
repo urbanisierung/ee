@@ -28,7 +28,7 @@ name = "rr"
 path = "src/rr.rs"
 
 [dependencies]
-crossterm = "0.28"
+crossterm = "0.29"
 
 [profile.release]
 strip = true
