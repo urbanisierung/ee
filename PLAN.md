@@ -4,6 +4,18 @@ This document is an implementation plan to hand to Sonnet. It describes **what
 to build and why**, with enough specificity that each task can be picked up
 independently. Nothing here is implemented yet.
 
+## Decisions (confirmed by the user — do not re-ask)
+
+- **License**: MIT.
+- **Distribution**: GitHub Releases only — **no crates.io**. `cargo install --git <repo>` is the from-source path.
+- **Platforms**: Linux + macOS only. **Windows is out of scope for v1.**
+- **Release tooling**: **hand-roll** the release workflow + install script (rationale in 1c).
+- **Install script**: **auto-edits the user's rc files** by default (with a `--no-shell` opt-out and an idempotent marker block).
+- **Website host**: **Cloudflare Pages** (not GitHub Pages). The user will
+  prepare the CF project/page name and the required secrets (e.g.
+  `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`) — the workflow consumes them.
+- **Demos**: static screenshots generated with **`vhs`** (charmbracelet/vhs).
+
 ## Context (read this first)
 
 The repo is a single Rust crate that produces **three separate binaries** from
@@ -73,12 +85,17 @@ Decisions to surface to the user before/while implementing:
   and whether the workflow should assert the tag matches the Cargo version.
 - **Naming**: confirm archive naming convention (used verbatim by the install script).
 
-### 1c. Optionally: `release-plz` or `cargo-dist`
-`cargo-dist` can generate the entire release workflow **and** a matching
-`install.sh` from `Cargo.toml`, which would satisfy much of Deliverable 2 for
-free. Evaluate it first; if adopted, Deliverable 2 becomes "customize the
-generated installer to add shell integration." If not adopted, hand-roll as
-below. Recommend evaluating `cargo-dist` before hand-rolling.
+### 1c. Release tooling decision: hand-roll (not cargo-dist)
+`cargo-dist` was considered. **Decision: hand-roll**, because:
+- The installer's core value here is **shell integration + rc-file editing**
+  (see Deliverable 2), which cargo-dist's generated installer does not do — we'd
+  override most of it anyway.
+- Scope is small and fixed (3 bundled binaries, GitHub-releases-only, no
+  Windows, no crates.io), so a hand-written matrix in `release.yml` is short and
+  fully under our control over the archive layout.
+
+Keep the hand-rolled `release.yml` from 1b and the hand-rolled `install.sh` from
+Deliverable 2 as the single source of truth for naming.
 
 ---
 
@@ -98,9 +115,12 @@ Behavior:
    - Warn if the dir isn't on `PATH` and print the line to add.
 5. **Shell integration** (this is the part `make install` currently omits):
    - `ee` needs an alias/function; `eee` needs a function because `eval "$(eee)"`
-     must run in the current shell. Provide a snippet and either append it to the
-     user's rc file (with confirmation / `--no-shell` opt-out) or print it for the
-     user to paste. Support bash, zsh, and fish (fish syntax differs).
+     must run in the current shell. **Default behavior: auto-append the snippet to
+     the user's detected rc file(s)** (bash → `~/.bashrc`, zsh → `~/.zshrc`, fish →
+     `~/.config/fish/config.fish`). Provide a `--no-shell` flag to skip and print
+     the snippet instead. Detect the active shell (`$SHELL` + which rc files
+     exist) and write to all that apply. Fish syntax differs — emit fish-native
+     functions there.
    - Suggested integration:
      ```sh
      ee()  { eval "$(command ee-bin "$@")"; }   # or keep `ee` as the binary + `alias se='eval $(ee)'`
@@ -130,14 +150,15 @@ binaries and the marked rc-file block.
 ## Deliverable 3 — Website / landing page
 
 Goal: a single, self-contained static landing page documenting **what / why /
-how**, plus copy-paste install. Hosted on **GitHub Pages**.
+how**, plus copy-paste install. Hosted on **Cloudflare Pages**.
 
 ### 3a. Tech choice
 Recommend a **single static `index.html`** (hand-written HTML + inline CSS, no
-build step) living in `docs/` or a `site/` dir, published via GitHub Pages. It's
-a 3-tool CLI suite — a full SSG (Astro/Zola/Docusaurus) is overkill. Keep it
-dependency-free so it's trivial to maintain and deploys with a Pages workflow.
-(If the user prefers a themed generator later, Zola or Astro are the fallbacks.)
+build step) living in a `site/` dir. It's a 3-tool CLI suite — a full SSG
+(Astro/Zola/Docusaurus) is overkill. Keep it dependency-free so it's trivial to
+maintain; the `site/` dir is published directly to Cloudflare Pages (no build
+command needed). Screenshots (from `vhs`, see 3d) live alongside as static
+assets. (If the user prefers a themed generator later, Astro is the fallback.)
 
 ### 3b. Page content / sections
 1. **Hero**: name, one-line pitch ("Three tiny terminal tools for env files,
@@ -158,37 +179,45 @@ dependency-free so it's trivial to maintain and deploys with a Pages workflow.
    users know what's on disk.
 6. Footer: license, repo link, version.
 
-### 3c. Publishing workflow — `.github/workflows/pages.yml`
-Deploy `docs/` (or the built site) to GitHub Pages on push to `main`. If it's
-plain HTML, this is just `upload-pages-artifact` + `deploy-pages`. Note for the
-user: **GitHub Pages must be enabled in repo settings** (Settings → Pages →
-source = GitHub Actions) — the workflow can't do that itself; call this out.
+### 3c. Publishing workflow — `.github/workflows/pages.yml` (Cloudflare Pages)
+Deploy the `site/` dir to **Cloudflare Pages** on push to `main`. Use
+`cloudflare/wrangler-action` (`wrangler pages deploy site/ --project-name=<name>`)
+or the Cloudflare Pages GitHub integration.
+- Since `site/` is plain static HTML there is **no build step** — just deploy the dir.
+- Consumes secrets **the user will provide**: `CLOUDFLARE_API_TOKEN` and
+  `CLOUDFLARE_ACCOUNT_ID` (repo secrets), plus the CF **project name** the user
+  creates. Reference them by name; do not hardcode. Add these to the PR
+  description as required setup so the user knows what to wire up.
+- Alternative (simpler, no GH Actions): connect the repo directly in the
+  Cloudflare Pages dashboard with build output = `site/`. Mention this as an
+  option; if the user goes that route, `pages.yml` is unnecessary.
 
-### 3d. Design note
-Keep it clean and terminal-flavored (monospace accents, dark theme, asciinema
-or a static "screenshot" of each TUI). Optional but high-impact: record short
-`asciinema`/`vhs` (charmbracelet/vhs) demos of each tool and embed them —
-`vhs` produces GIFs from a script and is reproducible in CI.
+### 3d. Design note + `vhs` screenshots
+Keep it clean and terminal-flavored (monospace accents, dark theme). Generate a
+**static screenshot** of each TUI (`ee`, `eee`, `rr`'s picker) using
+**`vhs`** (charmbracelet/vhs): write a `.tape` script per tool that drives the
+TUI and outputs a PNG (`Output demo.png`). Commit the `.tape` scripts under
+`site/demos/` (or `assets/`) so the screenshots are reproducible, and embed the
+generated PNGs in the page. Static images (not GIFs) per the user's preference.
 
 ---
 
 ## Deliverable 4 — Repo professionalism / hygiene
 
 Small items that collectively make the repo look maintained:
-1. **LICENSE** — none exists. Ask the user which (MIT vs. dual MIT/Apache-2.0 is
-   the Rust-ecosystem norm). Add `license = "…"` to `Cargo.toml` and the file(s).
+1. **LICENSE** — none exists. Add an **MIT** `LICENSE` file and set
+   `license = "MIT"` in `Cargo.toml`.
 2. **README overhaul**:
    - Add a top-level suite intro covering all three tools (currently `eee` is missing entirely).
    - Add the `curl | sh` install as the primary path; keep from-source as secondary.
    - Badges: CI status, latest release, license.
    - Link to the website.
 3. **`Cargo.toml` metadata**: `description`, `repository`, `homepage`,
-   `license`, `keywords`, `categories`, `authors`, `readme`. Needed for a
-   possible `cargo install` / crates.io path.
-4. **`cargo install` support**: document `cargo install --git <repo>` as an
-   install option (works today; just needs mentioning). Decide whether to
-   publish to crates.io (naming: `ee` may be taken — check; may need a suite
-   crate name).
+   `license = "MIT"`, `keywords`, `categories`, `authors`, `readme`. Good hygiene
+   and supports `cargo install --git`.
+4. **`cargo install` support**: document `cargo install --git <repo>` as the
+   from-source install option (works today; just needs mentioning). **No
+   crates.io publish** — GitHub Releases + `--git` only.
 5. **Community files**: `CONTRIBUTING.md` (how to build/test/run the checks),
    `.github/ISSUE_TEMPLATE/` (bug + feature), `.github/pull_request_template.md`,
    a `CHANGELOG.md` (Keep a Changelog format), and `rustfmt.toml` /
@@ -224,12 +253,19 @@ fmt/clippy/build now, adding `cargo test` coverage incrementally.
 4. **Deliverable 3** (website) — can proceed in parallel; needs the final install command from #2.
 5. **Deliverable 5** (tests) — parallel / fast-follow; upgrades CI from build-only to real.
 
-## Open questions to confirm with the user before building
+## Remaining open questions (minor — can be decided during implementation)
 
-- License choice (MIT vs dual MIT/Apache-2.0)?
-- Publish to crates.io, or GitHub-releases + `cargo install --git` only? (`ee` crate name may be taken.)
-- Windows support in scope for v1, or Linux + macOS only?
-- Adopt `cargo-dist` (auto-generates release workflow + installer) or hand-roll?
-- Shell-integration install: auto-append to rc files (with opt-out) or print-and-let-user-paste?
-- Website hosting confirmed as GitHub Pages, plain HTML? (vs. a generator.)
-- Record `vhs`/asciinema demos for the site, or static screenshots for v1?
+All major decisions are locked in the **Decisions** section at the top. Small
+items left to the implementer's judgement:
+
+- Exact release tag/version scheme (`vX.Y.Z`) and whether `release.yml` should
+  assert the tag matches the `Cargo.toml` version. (Recommend: yes.)
+- Whether to include `aarch64` Linux in the release matrix or ship x86_64 Linux
+  (gnu + musl) + both macOS arches only for v1.
+- Author name/email for `Cargo.toml` `authors` and the MIT copyright line.
+
+## User setup checklist (things only the user can do)
+
+- Create the **Cloudflare Pages** project and note its **project name**.
+- Add repo secrets: **`CLOUDFLARE_API_TOKEN`**, **`CLOUDFLARE_ACCOUNT_ID`**
+  (unless using the CF dashboard git integration instead of `pages.yml`).
