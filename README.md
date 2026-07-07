@@ -9,12 +9,12 @@ jump straight into any cloned repo (`eee`), and run the right command for
 whatever directory you're in (`rr`). No config files to hand-edit, no shell
 plugin frameworks — just three small Rust binaries.
 
-**[Website & docs →](https://ee-tools.pages.dev)** _(placeholder — update once the Cloudflare Pages project is live)_
+**[Website & docs →](https://ee.u11g.com)**
 
 ## Install
 
 ```sh
-curl -fsSL https://ee-tools.pages.dev/install.sh | sh
+curl -fsSL https://ee.u11g.com/install.sh | sh
 ```
 
 This downloads the latest release for your platform (Linux or macOS),
