@@ -29,9 +29,12 @@ The repo is a single Rust crate that produces **three separate binaries** from
 
 Critical implementation detail that affects install script + docs: **`ee` and
 `eee` do not change the shell themselves** — they print a command to stdout that
-the *calling shell* must `eval`. So installation isn't just "put a binary on
-PATH"; the user also needs shell integration (an alias/function). `rr` runs
-directly and needs no wrapper.
+the *calling shell* must `eval` (a hard OS constraint: a child process can't
+change its parent shell's cwd/env). So installation isn't just "put a binary on
+PATH"; the user also needs shell integration (a wrapper function). **The install
+script fully automates this** by writing shadowing shell functions to the user's
+rc files, so after `curl | sh` the user just types `ee`/`eee` — no manual `eval`.
+See Deliverable 2a step 5 for the mechanism. `rr` runs directly and needs no wrapper.
 
 Current state: `crossterm` is the only dependency. `Makefile` builds all three
 and `make install` copies them to a hardcoded `~/.local/share/omarchy/bin`
@@ -121,16 +124,29 @@ Behavior:
      the snippet instead. Detect the active shell (`$SHELL` + which rc files
      exist) and write to all that apply. Fish syntax differs — emit fish-native
      functions there.
-   - Suggested integration:
+   - **Integration mechanism (this is what removes the `eval` gotcha entirely).**
+     A child process cannot mutate its parent shell's `cwd`/env — that's an OS
+     constraint, which is *why* `ee`/`eee` print a command for the shell to run.
+     The fix is a shell function that **shadows** the same-named binary and
+     `eval`s its output, using `command` to reach the real binary without
+     recursing:
      ```sh
-     ee()  { eval "$(command ee-bin "$@")"; }   # or keep `ee` as the binary + `alias se='eval $(ee)'`
-     eee() { eval "$(command eee-bin "$@")"; }
+     ee()  { eval "$(command ee  "$@")"; }
+     eee() { eval "$(command eee "$@")"; }
      ```
-     Decide whether the binary itself installs as `ee`/`eee` and the shell
-     function wraps a differently-named binary, or the function shadows the
-     binary via `command`. **Recommendation:** ship binaries named `ee`/`eee`,
-     have the shell function call them via `command ee` to avoid recursion. Pin
-     the exact scheme and keep it identical across install.sh, README, and website.
+     Fish equivalent:
+     ```fish
+     function ee;  eval (command ee  $argv); end
+     function eee; eval (command eee $argv); end
+     ```
+     **Recommendation:** ship binaries named `ee`/`eee`; the function calls
+     `command ee` to avoid recursion. After the script writes these, the user
+     just types `ee`/`eee` and it works — no manual `eval` ever. Pin this exact
+     scheme identically across `install.sh`, README, and website.
+   - **Residual gotcha only for non-script installs.** Users who take
+     `cargo install --git` or copy the binary manually don't get the functions,
+     so the docs must show the snippet above for them. The `curl | sh` path
+     eliminates the gotcha completely.
 6. Idempotent: re-running upgrades in place and doesn't duplicate rc-file lines
    (guard with a marker comment block).
 7. Clear success output: what was installed, where, and "restart your shell / `source` your rc".
