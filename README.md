@@ -93,8 +93,16 @@ ee
 | Esc | Quit without output |
 
 Files are stored as plain files under `~/.config/envvars/` — put your
-`.env`-style files there and `ee` picks them up. Most-recently-used order and
-usage counts are tracked automatically.
+`.env`-style files there and `ee` picks them up. Files used in the current
+directory appear first, ordered by how often you select them there. Ties and
+remaining files keep the usual most-recently-used order (then alphabetical).
+With no matching directory history, ordering is unchanged. Directory matching
+is exact, not inherited by subdirectories; symlink aliases share history.
+
+Directory usage is learned from new selections and stored separately in
+`~/.config/envvars/.ee_usage/counts`. Existing history and global usage counts
+remain compatible with older versions, which ignore directory usage. The usage
+report continues to show global counts.
 
 ## `eee` — repo picker
 
