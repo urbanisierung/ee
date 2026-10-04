@@ -12,13 +12,15 @@ use std::{
     collections::HashMap,
     fs,
     io::{self, BufRead, BufReader, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process,
     rc::Rc,
 };
 
 const HISTORY_FILE: &str = ".ee_history";
 const COUNTS_FILE: &str = ".ee_counts";
+// Older versions only discover regular files, so keep new metadata in a directory.
+const DIRECTORY_COUNTS_FILE: &str = ".ee_usage/counts";
 const ENVVARS_DIR: &str = ".config/envvars";
 
 fn envvars_dir() -> PathBuf {
@@ -45,10 +47,10 @@ fn save_counts(path: &PathBuf, counts: &HashMap<String, u64>) -> io::Result<()> 
     fs::write(path, ee_tools::format_counts(counts))
 }
 
-fn increment_count(path: &PathBuf, filename: &str) {
+fn increment_count(path: &PathBuf, filename: &str) -> io::Result<()> {
     let mut counts = load_counts(path);
     *counts.entry(filename.to_string()).or_insert(0) += 1;
-    let _ = save_counts(path, &counts);
+    save_counts(path, &counts)
 }
 
 /// Load the MRU history list (filenames only, not paths).
@@ -64,11 +66,45 @@ fn save_history(path: &PathBuf, history: &[String]) -> io::Result<()> {
     fs::write(path, ee_tools::format_history(history))
 }
 
-/// Record a file as most recently used.
-fn record_usage(history_path: &PathBuf, filename: &str) {
-    let mut history = load_history(history_path);
+/// Record global usage in the legacy formats and directory usage separately.
+fn record_usage(dir: &Path, cwd: Option<&Path>, filename: &str) -> io::Result<()> {
+    let history_path = dir.join(HISTORY_FILE);
+    let mut history = load_history(&history_path);
     ee_tools::record_mru(&mut history, filename);
-    let _ = save_history(history_path, &history);
+    save_history(&history_path, &history)?;
+    increment_count(&dir.join(COUNTS_FILE), filename)?;
+    if let Some(cwd) = cwd {
+        let path = dir.join(DIRECTORY_COUNTS_FILE);
+        fs::create_dir_all(path.parent().unwrap())?;
+        increment_count(&path, &directory_usage_key(cwd, filename))?;
+    }
+    Ok(())
+}
+
+fn directory_usage_key(cwd: &Path, filename: &str) -> String {
+    // Hex encoding avoids delimiter collisions and preserves non-UTF-8 paths.
+    let directory: String = cwd
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let file: String = filename
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("{directory}/{file}")
+}
+
+fn rank_by_directory(files: &mut [String], counts: &HashMap<String, u64>, cwd: Option<&Path>) {
+    if let Some(cwd) = cwd {
+        // Stable sorting retains the existing MRU/alphabetical order for ties
+        // and for files without usage in this directory.
+        files.sort_by_cached_key(|name| {
+            std::cmp::Reverse(*counts.get(&directory_usage_key(cwd, name)).unwrap_or(&0))
+        });
+    }
 }
 
 /// Discover files in the envvars directory, sorted by MRU then alphabetically.
@@ -458,7 +494,12 @@ fn run() -> io::Result<Option<String>> {
     let hist_path = history_path();
     let cnt_path = counts_path();
     let history = load_history(&hist_path);
-    let files = discover_files(&dir, &history);
+    let cwd = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| cwd.canonicalize().ok());
+    let mut files = discover_files(&dir, &history);
+    let directory_counts = load_counts(&dir.join(DIRECTORY_COUNTS_FILE));
+    rank_by_directory(&mut files, &directory_counts, cwd.as_deref());
 
     if files.is_empty() {
         eprintln!("No env files in ~/.config/envvars");
@@ -590,8 +631,6 @@ fn run() -> io::Result<Option<String>> {
                             let filtered = filter_files(&app.files, &app.query);
                             if let Some(name) = filtered.get(app.selection) {
                                 let name = name.to_string();
-                                record_usage(&hist_path, &name);
-                                increment_count(&cnt_path, &name);
                                 return Ok(Some(name));
                             }
                         }
@@ -665,8 +704,6 @@ fn run() -> io::Result<Option<String>> {
                         let filtered = app.filtered();
                         if let Some(name) = filtered.get(app.selection) {
                             let name = name.to_string();
-                            record_usage(&hist_path, &name);
-                            increment_count(&cnt_path, &name);
                             return Ok(Some(name));
                         }
                     }
@@ -746,7 +783,11 @@ fn run() -> io::Result<Option<String>> {
     let _ = execute!(tty_write, LeaveAlternateScreen, cursor::Show);
     let _ = disable_raw_mode();
 
-    result
+    let selected = result?;
+    if let Some(name) = &selected {
+        record_usage(&dir, cwd.as_deref(), name)?;
+    }
+    Ok(selected)
 }
 
 fn main() {
@@ -786,6 +827,136 @@ mod tests {
 
     fn app_with(files: Vec<&str>) -> App {
         App::new(files.into_iter().map(String::from).collect())
+    }
+
+    #[test]
+    fn directory_frequency_overrides_global_recency() {
+        let cwd = Path::new("/A");
+        let mut files = app_with(vec!["global", "recent", "AE"]).files;
+        let counts = HashMap::from([
+            (directory_usage_key(cwd, "AE"), 10),
+            (directory_usage_key(cwd, "recent"), 1),
+            (directory_usage_key(Path::new("/B"), "global"), 1000),
+        ]);
+        rank_by_directory(&mut files, &counts, Some(cwd));
+        assert_eq!(files, vec!["AE", "recent", "global"]);
+    }
+
+    #[test]
+    fn directory_ties_and_unused_files_keep_existing_order() {
+        let cwd = Path::new("/A");
+        let mut files = app_with(vec!["unused-z", "local-z", "local-a", "unused-a"]).files;
+        let counts = HashMap::from([
+            (directory_usage_key(cwd, "local-a"), 3),
+            (directory_usage_key(cwd, "local-z"), 3),
+        ]);
+        rank_by_directory(&mut files, &counts, Some(cwd));
+        assert_eq!(files, vec!["local-z", "local-a", "unused-z", "unused-a"]);
+    }
+
+    #[test]
+    fn missing_unrelated_or_stale_directory_usage_preserves_order() {
+        let original = app_with(vec!["z", "a", "b"]).files;
+        let counts = HashMap::from([
+            (directory_usage_key(Path::new("/A"), "z"), 10),
+            (directory_usage_key(Path::new("/B"), "deleted"), 20),
+        ]);
+        for cwd in [None, Some(Path::new("/B")), Some(Path::new("/A/child"))] {
+            let mut files = original.clone();
+            rank_by_directory(&mut files, &counts, cwd);
+            assert_eq!(files, original);
+        }
+        let mut files = original.clone();
+        rank_by_directory(&mut files, &HashMap::new(), Some(Path::new("/A")));
+        assert_eq!(files, original);
+    }
+
+    #[test]
+    fn directory_keys_round_trip_without_delimiter_collisions() {
+        let key = directory_usage_key(Path::new("/work/é\t\n\\"), "env\t\n\\é");
+        let counts = HashMap::from([(key.clone(), 7)]);
+        assert_eq!(
+            ee_tools::parse_counts(ee_tools::format_counts(&counts).as_bytes()),
+            counts
+        );
+        assert!(!key.contains(['\t', '\n']));
+        assert_ne!(
+            directory_usage_key(Path::new("/a/b"), "c"),
+            directory_usage_key(Path::new("/a"), "b/c")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_keys_preserve_non_utf8_paths() {
+        use std::os::unix::ffi::OsStrExt;
+        let cwd = Path::new(std::ffi::OsStr::from_bytes(b"/work/\xff"));
+        assert_ne!(
+            directory_usage_key(cwd, "env"),
+            directory_usage_key(Path::new("/work/�"), "env")
+        );
+    }
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!("ee-test-{}-{nonce}", process::id()));
+            fs::create_dir(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn directory_storage_coexists_with_legacy_readers_and_writers() {
+        let temp = TestDir::new();
+        let dir = &temp.0;
+        let cwd = Path::new("/A");
+        for name in ["AE", "global", "unused"] {
+            fs::write(dir.join(name), "").unwrap();
+        }
+        fs::write(dir.join(HISTORY_FILE), "global\nAE\n").unwrap();
+        fs::write(dir.join(COUNTS_FILE), "global\t1000\nAE\t2\n").unwrap();
+        let local_path = dir.join(DIRECTORY_COUNTS_FILE);
+        assert!(load_counts(&local_path).is_empty());
+
+        record_usage(dir, Some(cwd), "AE").unwrap();
+        record_usage(dir, Some(cwd), "AE").unwrap();
+        record_usage(dir, Some(Path::new("/B")), "global").unwrap();
+        let local_before = fs::read(&local_path).unwrap();
+        let local_counts = load_counts(&local_path);
+        assert_eq!(local_counts[&directory_usage_key(cwd, "AE")], 2);
+        assert!(!local_counts.contains_key(&directory_usage_key(cwd, "global")));
+
+        // Simulate an old version rewriting only the two legacy files.
+        let mut history = load_history(&dir.join(HISTORY_FILE));
+        ee_tools::record_mru(&mut history, "global");
+        save_history(&dir.join(HISTORY_FILE), &history).unwrap();
+        increment_count(&dir.join(COUNTS_FILE), "global").unwrap();
+        assert_eq!(load_counts(&dir.join(COUNTS_FILE))["global"], 1002);
+        assert_eq!(load_counts(&dir.join(COUNTS_FILE))["AE"], 4);
+        assert_eq!(fs::read(&local_path).unwrap(), local_before);
+
+        // Discovery is unchanged, so older versions cannot offer metadata as env files.
+        let mut files = discover_files(dir, &history);
+        assert_eq!(files, vec!["global", "AE", "unused"]);
+        rank_by_directory(&mut files, &local_counts, Some(cwd));
+        assert_eq!(files, vec!["AE", "global", "unused"]);
+
+        record_usage(dir, None, "unused").unwrap();
+        assert_eq!(load_history(&dir.join(HISTORY_FILE))[0], "unused");
+        assert_eq!(load_counts(&dir.join(COUNTS_FILE))["unused"], 1);
+        assert_eq!(fs::read(&local_path).unwrap(), local_before);
     }
 
     #[test]
